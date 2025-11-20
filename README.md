@@ -7,14 +7,21 @@ This is a Master Thesis project conducted as part of the Master's in [Systems Bi
 This project uses **Git submodules** to include external model repositories under the `models/` directory.  
 After cloning the repository, **you must initialize and update all submodules** before running any code.
 
-### Initial Setup
-1. Clone with submodules:
+### Submodule Setup
+Clone with submodules:
 ```bash
 git clone --recurse-submodules git@github.com:JohannUM/kcat-prediction-benchmarking.git
 ```
-2. Setup submodules after cloning:
+Or setup submodules after cloning:
 ```bash
 git submodule update --init --recursive
+```
+
+### Notebook Setup
+To run the `notebooks` the kcatbench module has to be installed in the environment for all imports to be resolved. In the root directory of this project run:
+
+```bash
+pip install -e .
 ```
 
 ## Project Information

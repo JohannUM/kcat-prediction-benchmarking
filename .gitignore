@@ -1,10 +1,16 @@
 # Visual Studio Code
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
+.vscode/
 *.code-workspace
 
 # Local History extension
 .history/
+
+# Packaging / build artifacts
+*.egg-info/
+*.dist-info/
+build/
+dist/
+
+# Data files
+data/DLKcat/*
+!data/DLKcat/.gitkeep

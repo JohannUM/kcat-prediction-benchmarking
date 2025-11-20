@@ -1,0 +1,7 @@
+[project]
+name = "kcatbench"
+version = "0.1.0"
+description = "Kcat benchmarking framework"
+
+[tool.setuptools.packages.find]
+where = ["src"]
