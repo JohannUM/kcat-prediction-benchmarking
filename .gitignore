@@ -14,3 +14,22 @@ dist/
 # Data files
 data/DLKcat/*
 !data/DLKcat/.gitkeep
+
+# Python cache / build
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Testing / type-checking cache
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments / env files
+venv/
+.env
+.env.*
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
