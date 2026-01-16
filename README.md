@@ -12,7 +12,7 @@ Clone with submodules:
 ```bash
 git clone --recurse-submodules git@github.com:JohannUM/kcat-prediction-benchmarking.git
 ```
-Or setup submodules after cloning:
+Or set up submodules after cloning:
 ```bash
 git submodule update --init --recursive
 ```
@@ -29,3 +29,4 @@ pip install -e .
 | Model  | Location        | Source Repository                                                                    |
 | ------ | --------------- | ------------------------------------------------------------------------------------ |
 | DLKcat | `models/DLKcat` | [https://github.com/SysBioChalmers/DLKcat](https://github.com/SysBioChalmers/DLKcat) |
+| MMKcat | `models/MMKcat` | [https://github.com/ProEcho1/MMKcat](https://github.com/ProEcho1/MMKcat) |

@@ -1,3 +1,6 @@
 [submodule "models/DLKcat"]
 	path = models/DLKcat
 	url = https://github.com/SysBioChalmers/DLKcat.git
+[submodule "models/MMKcat"]
+	path = models/MMKcat
+	url = https://github.com/ProEcho1/MMKcat.git
