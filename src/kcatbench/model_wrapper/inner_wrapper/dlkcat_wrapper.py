@@ -24,16 +24,15 @@ from collections import defaultdict
 class DLKcatWrapper(BaseModel):
     name = "DLKcat"
 
-    fingerprint_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "fingerprint_dict.pickle")
-    atom_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "atom_dict.pickle")
-    bond_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "bond_dict.pickle")
-    edge_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "edge_dict.pickle")
-    word_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "sequence_dict.pickle")
-    
-
     def __init__(self):
         super().__init__()
         self._prepare_resources()
+
+        self.fingerprint_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "fingerprint_dict.pickle")
+        self.atom_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "atom_dict.pickle")
+        self.bond_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "bond_dict.pickle")
+        self.edge_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "edge_dict.pickle")
+        self.word_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "sequence_dict.pickle")
 
     def _prepare_resources(self):
         input_zip_file = DLKCAT_CODE_DIR / "Data" / "input.zip"
