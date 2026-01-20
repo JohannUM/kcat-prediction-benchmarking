@@ -12,8 +12,8 @@ ENVIRONMENT_NAMES: dict[str, str] = {
 class Model(BaseModel):
 
     def __init__(self, model_name:str, env_name:str=None):
-        if(model_name not in ENVIRONMENT_NAMES.keys):
-            raise ValueError(f"{model_name} is not valid\nValid names are: {ENVIRONMENT_NAMES.keys}")
+        if(model_name not in ENVIRONMENT_NAMES.keys()):
+            raise ValueError(f"{model_name} is not valid\nValid names are: {ENVIRONMENT_NAMES.keys()}")
 
         if(env_name != None):
             self.env_name = env_name
