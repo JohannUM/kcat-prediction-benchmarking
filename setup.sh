@@ -1,14 +1,43 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source /opt/conda/etc/profile.d/conda.sh
+# Initialize conda
+if command -v conda >/dev/null 2>&1; then
+  CONDA_BASE="$(conda info --base)"
+else
+  CONDA_BASE=""
+fi
+
+if [ -z "${CONDA_BASE}" ]; then
+  for candidate in \
+    "/opt/conda" \
+    "$HOME/miniconda3" \
+    "$HOME/mambaforge" \
+    "$HOME/anaconda3" \
+    "/usr/local/anaconda3" \
+    "/usr/local/miniconda3"
+  do
+    if [ -f "${candidate}/etc/profile.d/conda.sh" ]; then
+      CONDA_BASE="${candidate}"
+      break
+    fi
+  done
+fi
+
+if [ -n "${CONDA_BASE}" ] && [ -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]; then
+  # shellcheck disable=SC1090
+  source "${CONDA_BASE}/etc/profile.d/conda.sh"
+else
+  echo "Error: Could not find conda.sh." >&2
+  exit 1
+fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ENV_NAMES=(
   "dlkcat_env"
-  # "mmkcat_env"
   "catapro_env"
+  # "mmkcat_env"
 )
 
 ENV_FILES=(
