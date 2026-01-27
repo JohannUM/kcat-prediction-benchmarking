@@ -10,3 +10,7 @@
 	path = models/CataPro
 	url = https://github.com/zchwang/CataPro.git
 	ignore = dirty
+[submodule "models/CatPred"]
+	path = models/CatPred
+	url = https://github.com/maranasgroup/CatPred.git
+	ignore = dirty
