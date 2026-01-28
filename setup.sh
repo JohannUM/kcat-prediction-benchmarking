@@ -37,6 +37,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_NAMES=(
   "dlkcat_env"
   "catapro_env"
+  "catpred_env"
   # "mmkcat_env"
 )
 
@@ -44,6 +45,7 @@ ENV_FILES=(
   "${ROOT_DIR}/environments/dlkcat_environment.yml"
   # "${ROOT_DIR}/environments/mmkcat_environment.yml"
   "${ROOT_DIR}/environments/catapro_environment.yml"
+  "${ROOT_DIR}/environments/catpred_environment.yml"
 )
 
 if [ "${#ENV_NAMES[@]}" -ne "${#ENV_FILES[@]}" ]; then
@@ -63,6 +65,23 @@ for i in "${!ENV_FILES[@]}"; do
 
   echo "==> Installing this repo into env: ${env_name}"
   conda run -n "${env_name}" python -m pip install -e "${ROOT_DIR}"
+
+  case "${env_name}" in
+    "catpred_env")
+      echo "==> [CatPred] Installing submodule dependencies..."
+      if [ -d "${ROOT_DIR}/models/CatPred" ]; then
+          conda run -n "${env_name}" python -m pip install -e "${ROOT_DIR}/models/CatPred"
+      else
+          echo "Warning: models/CatPred directory not found. Skipping submodule install."
+      fi
+      ;;
+      
+    "catapro_env")
+      ;;
+
+    *)
+      # Default case
+  esac
 
   echo
 done
