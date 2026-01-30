@@ -1,6 +1,5 @@
-import sys
-
-from kcatbench.util import MODELS_DIR, DATA_DIR, extract_tar_gz, wget_download
+import os
+from kcatbench.util import MODELS_DIR, DATA_DIR, extract_tar_gz, wget_download, work_in_dir
 
 CATPRED_CODE_DIR = MODELS_DIR / "CatPred"
 CATPRED_DATA_DIR = DATA_DIR / "CatPred"
@@ -14,10 +13,14 @@ class CatPredWrapper(BaseModel):
     name = "CatPred"
 
     def __init__(self):
-        super.__init__()
+        super().__init__()
         self._prepare_resources()
 
     def _prepare_resources(self):
+        success_marker = CATPRED_DATA_DIR / ".setup_complete"
+        if success_marker.exists():
+            return
+
         archive_path = CATPRED_DATA_DIR / "capsule_data_update.tar.gz"
 
         print(f"Downloading data to {archive_path}...")
@@ -28,21 +31,30 @@ class CatPredWrapper(BaseModel):
         print(f"Extracting archive to {CATPRED_DATA_DIR}...")
         result = extract_tar_gz(archive_path, CATPRED_DATA_DIR)
         if not result['success']:
+            archive_path.unlink(missing_ok=True)
             raise RuntimeError(result['message'])
         
         try:
             archive_path.unlink()
-            print("Cleaned up archive file.")
+            success_marker.touch()
         except OSError as e:
             print(f"Warning: Could not remove archive file: {e}")
 
     def predict(self, input_data: pd.DataFrame):
-        return super().predict(input_data)
+        with work_in_dir(CATPRED_CODE_DIR):
+            outfile = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR))
+            if outfile is None:
+                raise RuntimeError("outfile is none")
+            
+            os.system("export PROTEIN_EMBED_USE_CPU=0;./predict.sh")
+
+            output_final = self._get_predictions("kcat", outfile)
+
+        return output_final
     
-    def _create_csv_sh(self, parameter, input_file_path, checkpoint_dir):
-        df = pd.read_csv(input_file_path)
-        smiles_list = df.SMILES
-        seq_list = df.sequence
+    def _create_csv_sh(self, parameter, input_data:pd.DataFrame, checkpoint_dir):
+        smiles_list = input_data['smiles']
+        seq_list = input_data['sequence']
         smiles_list_new = []
 
         for i, smi in enumerate(smiles_list):
@@ -64,8 +76,10 @@ class CatPredWrapper(BaseModel):
                 print('Correct your input! Exiting..')
                 return None
 
-        input_file_new_path = f'{input_file_path[:-4]}_input.csv'
+        input_file_new_path = str(CATPRED_DATA_DIR / "kcat_prediction_input.csv")
+        df = pd.DataFrame()
         df['SMILES'] = smiles_list_new
+        df['sequence'] = seq_list
         df.to_csv(input_file_new_path)
 
         with open('predict.sh', 'w') as f:
