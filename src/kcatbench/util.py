@@ -7,6 +7,7 @@ from contextlib import contextmanager
 ROOT_DIR = Path(__file__).resolve().parents[2]
 MODELS_DIR = (ROOT_DIR / "models")
 DATA_DIR = (ROOT_DIR / "data")
+RESULT_DIR = (ROOT_DIR / "results")
 
 
 def wget_download(url, output_path, retries=3, timeout=90, show_progress=True):

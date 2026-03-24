@@ -18,6 +18,9 @@ data/DLKcat/*
 data/CataPro/*
 !data/CataPro/.gitkeep
 
+results/plots/*
+!results/plots/.gitkeep
+
 data/results/*
 
 # Python cache / build
