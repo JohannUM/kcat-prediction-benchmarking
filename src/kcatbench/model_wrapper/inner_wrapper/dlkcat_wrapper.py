@@ -9,7 +9,7 @@ if str(DLKCAT_CODE_DIR / "Code" / "example") not in sys.path:
     sys.path.insert(0, str(DLKCAT_CODE_DIR / "Code" / "example"))
 
 
-from kcatbench.model_wrapper.base import BaseModel
+from kcatbench.model_wrapper.base_model import BaseModel
 import model
 import pandas as pd
 import numpy as np

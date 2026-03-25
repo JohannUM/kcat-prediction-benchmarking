@@ -1,4 +1,4 @@
-from .model_wrapper.model_wrapper import Model
+from .model_wrapper.model import Model
 from . import plotting
 
 __all__ = [

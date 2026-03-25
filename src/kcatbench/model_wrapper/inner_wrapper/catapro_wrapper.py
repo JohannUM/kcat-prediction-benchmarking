@@ -11,7 +11,7 @@ import pandas as pd
 import numpy as np
 import torch as th
 from huggingface_hub import snapshot_download
-from kcatbench.model_wrapper.base import BaseModel
+from kcatbench.model_wrapper.base_model import BaseModel
 
 from inference.utils import *
 from inference.model import *

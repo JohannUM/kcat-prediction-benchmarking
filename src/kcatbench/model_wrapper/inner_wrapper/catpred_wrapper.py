@@ -4,7 +4,7 @@ from kcatbench.util import MODELS_DIR, DATA_DIR, extract_tar_gz, wget_download, 
 CATPRED_CODE_DIR = MODELS_DIR / "CatPred"
 CATPRED_DATA_DIR = DATA_DIR / "CatPred"
 
-from kcatbench.model_wrapper.base import BaseModel
+from kcatbench.model_wrapper.base_model import BaseModel
 import pandas as pd
 import numpy as np
 from rdkit import Chem

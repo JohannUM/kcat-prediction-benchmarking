@@ -3,7 +3,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from kcatbench.model_wrapper.base import BaseModel
+from kcatbench.model_wrapper.base_model import BaseModel
 
 ENVIRONMENT_NAMES: dict[str, str] = {
     "dlkcat": "dlkcat_env",
