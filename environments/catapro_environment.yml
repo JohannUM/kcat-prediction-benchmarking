@@ -2,11 +2,13 @@ name: catapro_env
 channels:
   - conda-forge
 dependencies:
-  - python=3.10.*
-  - pytorch
-  - numpy
-  - huggingface_hub
-  - transformers
-  - sentencepiece
-  - pandas
-  - rdkit
+  - conda-forge::python=3.10
+  - conda-forge::pytorch=2.1.0=cuda118_py310*
+  - conda-forge::cudatoolkit=11.8
+  - conda-forge::numpy
+  - conda-forge::huggingface_hub
+  - conda-forge::transformers=4.30.2
+  - conda-forge::pandas
+  - conda-forge::rdkit
+  - conda-forge::sentencepiece
+  - conda-forge::protobuf
