@@ -23,6 +23,9 @@ results/plots/*
 
 data/results/*
 
+data/brenda/*
+!data/brenda/.gitkeep
+
 # Python cache / build
 __pycache__/
 *.py[cod]
