@@ -42,7 +42,7 @@ class CatPredWrapper(BaseModel):
 
     def predict(self, input_data: pd.DataFrame):
         with work_in_dir(CATPRED_CODE_DIR):
-            outfile = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR))
+            outfile = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR / "data" / "pretrained" / "production" / "kcat"))
             if outfile is None:
                 raise RuntimeError("outfile is none")
             
@@ -80,6 +80,7 @@ class CatPredWrapper(BaseModel):
         df = pd.DataFrame()
         df['SMILES'] = smiles_list_new
         df['sequence'] = seq_list
+        df['pdbpath'] = [f"sequence_{i}" for i in range(len(df))]
         df.to_csv(input_file_new_path)
 
         with open('predict.sh', 'w') as f:
