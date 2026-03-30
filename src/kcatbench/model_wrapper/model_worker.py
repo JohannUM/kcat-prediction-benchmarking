@@ -1,7 +1,10 @@
 import argparse
+import sys
+import traceback
 import pandas as pd
 from pathlib import Path
 from collections.abc import Callable
+from typing import Optional
 
 def _predict_dlkcat(input:pd.DataFrame) -> pd.DataFrame:
     from kcatbench.model_wrapper.inner_wrapper.dlkcat_wrapper import DLKcatWrapper
@@ -28,11 +31,16 @@ def run_predict(model:str, input_path:Path, output_path:Path):
     if model not in PREDICT_HANDLERS:
         raise ValueError(f"Unknown model '{model}'.")
     
-    input = pd.read_csv(input_path, sep="\t")
-    output = PREDICT_HANDLERS[model](input)
-    output.to_csv(output_path, sep="\t", index=False)
+    try:
+        input = pd.read_csv(input_path, sep="\t")
+        output = PREDICT_HANDLERS[model](input)
+        output.to_csv(output_path, sep="\t", index=False)
+    except Exception as e:
+        print(f"--- WORKER EXCEPTION IN MODEL: {model} ---", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: Optional[list[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Conda worker that runs a kcat prediction model")
     
     subparsers = parser.add_subparsers(dest="command", required=True)

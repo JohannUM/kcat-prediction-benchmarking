@@ -18,6 +18,9 @@ data/DLKcat/*
 data/CataPro/*
 !data/CataPro/.gitkeep
 
+data/CatPred/*
+!data/CatPred/.gitkeep
+
 results/plots/*
 !results/plots/.gitkeep
 

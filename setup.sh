@@ -64,7 +64,7 @@ for i in "${!ENV_FILES[@]}"; do
   conda env update -n "${env_name}" -f "${env_file}" --prune
 
   echo "==> Installing this repo into env: ${env_name}"
-  conda run -n "${env_name}" python -m pip install -e "${ROOT_DIR}"
+  conda run -n "${env_name}" python -m pip install --no-deps -e "${ROOT_DIR}"
 
   case "${env_name}" in
     "catpred_env")

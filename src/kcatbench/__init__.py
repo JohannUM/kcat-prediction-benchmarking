@@ -1,7 +1,12 @@
 from .model_wrapper.model import Model
-from . import plotting
+
+def __getattr__(name):
+    """Lazily load modules only when they are accessed."""
+    if name == "plotting":
+        import importlib
+        return importlib.import_module(".plotting", __name__)
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 __all__ = [
-    'Model', 
-    'plotting'
+    'Model',
 ]

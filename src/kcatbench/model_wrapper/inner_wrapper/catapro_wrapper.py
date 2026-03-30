@@ -104,8 +104,8 @@ class CataProWrapper(BaseModel):
                 data = data.to(device)
                 ezy_feats = data[:, :1024]
                 sbt_feats = data[:, 1024:]
-                pred_kcat = kcat_model(ezy_feats, sbt_feats).cpu().numpy()
-                pred_Km = Km_model(ezy_feats, sbt_feats).cpu().numpy()
+                pred_kcat = kcat_model(ezy_feats, sbt_feats)[0].cpu().numpy()
+                pred_Km = Km_model(ezy_feats, sbt_feats)[0].cpu().numpy()
                 pred_act = act_model(ezy_feats, sbt_feats)[-1].cpu().numpy()
                 pred_list.append(np.concatenate([pred_kcat, pred_Km, pred_act], axis=1))
             

@@ -10,3 +10,5 @@ dependencies:
   - ipykernel
   - scikit-learn
   - scipy
+  - upsetplot
+  - img2pdf

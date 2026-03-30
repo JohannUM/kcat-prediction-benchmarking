@@ -46,7 +46,7 @@ class CatPredWrapper(BaseModel):
             if outfile is None:
                 raise RuntimeError("outfile is none")
             
-            os.system("export PROTEIN_EMBED_USE_CPU=0;./predict.sh")
+            os.system("export PROTEIN_EMBED_USE_CPU=0; bash ./predict.sh")
 
             output_final = self._get_predictions("kcat", outfile)
 
@@ -94,7 +94,7 @@ class CatPredWrapper(BaseModel):
 
         return input_file_new_path[:-4]+'_output.csv'
     
-    def _get_predictions(parameter, outfile):
+    def _get_predictions(self, parameter, outfile):
         """
         Process prediction results and add additional metrics.
 

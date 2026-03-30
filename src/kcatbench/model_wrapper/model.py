@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import subprocess
 import tempfile
@@ -24,6 +25,21 @@ class Model(BaseModel):
         self.model_name = model_name 
         super().__init__()
 
+    def _get_isolated_env(self) -> dict[str, str]:
+        """Creates a clean environment dictionary for the subprocess."""
+        env = os.environ.copy()
+        
+        keys_to_remove = [
+            "PYTHONPATH",        
+            "PYTHONHOME", 
+            "MPLBACKEND",
+        ]
+        
+        for key in keys_to_remove:
+            env.pop(key, None)
+            
+        return env
+
     def predict(self, input_data:pd.DataFrame) -> pd.DataFrame:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
@@ -33,16 +49,19 @@ class Model(BaseModel):
             input_data.to_csv(input_path, sep="\t", index=False)
 
             cmd = [
-                "conda", "run", "-n", self.env_name,
-                "python", "-m", "kcatbench.model_worker", "predict",
+                "conda", "run", "-n", self.env_name, "--no-capture-output",
+                "python", "-m", "kcatbench.model_wrapper.model_worker", "predict",
                 "--model", self.model_name, "--input", str(input_path), "--output", str(output_path)
             ]
 
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(
+                cmd, 
+                capture_output=True, 
+                text=True, 
+                env=self._get_isolated_env()
+            )
 
             if(result.returncode != 0):
                 raise RuntimeError(f"Model {self.model_name} failed:\nOUTPUT:\n{result.stdout}\n\nERROR:\n{result.stderr}")
 
             return pd.read_csv(output_path, sep="\t")
-        
-        return super().predict(input_data)
