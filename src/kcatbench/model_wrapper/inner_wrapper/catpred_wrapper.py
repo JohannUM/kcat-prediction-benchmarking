@@ -1,5 +1,5 @@
 import os
-from kcatbench.util import MODELS_DIR, DATA_DIR, extract_tar_gz, wget_download, work_in_dir
+from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, extract_tar_gz, wget_download, work_in_dir, ensure_data_subfolder
 
 CATPRED_CODE_DIR = MODELS_DIR / "CatPred"
 CATPRED_DATA_DIR = DATA_DIR / "CatPred"
@@ -17,6 +17,8 @@ class CatPredWrapper(BaseModel):
         self._prepare_resources()
 
     def _prepare_resources(self):
+        ensure_data_subfolder(CATPRED_DATA_DIR)
+
         success_marker = CATPRED_DATA_DIR / ".setup_complete"
         if success_marker.exists():
             return
@@ -83,6 +85,8 @@ class CatPredWrapper(BaseModel):
         df['pdbpath'] = [f"sequence_{i}" for i in range(len(df))]
         df.to_csv(input_file_new_path)
 
+        gpu_id = DEVICE.split(":")[1] if ":" in DEVICE else "0"
+
         with open('predict.sh', 'w') as f:
             f.write(f'''
             TEST_FILE_PREFIX={input_file_new_path[:-4]}
@@ -90,7 +94,7 @@ class CatPredWrapper(BaseModel):
             CHECKPOINT_DIR={checkpoint_dir}
             
             python ./scripts/create_pdbrecords.py --data_file ${{TEST_FILE_PREFIX}}.csv --out_file ${{RECORDS_FILE}}
-            python predict.py --test_path ${{TEST_FILE_PREFIX}}.csv --preds_path ${{TEST_FILE_PREFIX}}_output.csv --checkpoint_dir $CHECKPOINT_DIR --uncertainty_method mve --smiles_column SMILES --individual_ensemble_predictions --protein_records_path $RECORDS_FILE
+            python predict.py --test_path ${{TEST_FILE_PREFIX}}.csv --preds_path ${{TEST_FILE_PREFIX}}_output.csv --checkpoint_dir $CHECKPOINT_DIR --uncertainty_method mve --smiles_column SMILES --individual_ensemble_predictions --protein_records_path $RECORDS_FILE --gpu {gpu_id}
             ''')
 
         return input_file_new_path[:-4]+'_output.csv'

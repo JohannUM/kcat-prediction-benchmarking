@@ -1,6 +1,6 @@
 import sys
 
-from kcatbench.util import MODELS_DIR, DATA_DIR
+from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, ensure_data_subfolder
 
 DLKCAT_CODE_DIR = (MODELS_DIR / "DLKcat" / "DeeplearningApproach")
 DLKCAT_DATA_DIR = (DATA_DIR / "DLKcat") 
@@ -28,13 +28,9 @@ class DLKcatWrapper(BaseModel):
         super().__init__()
         self._prepare_resources()
 
-        self.fingerprint_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "fingerprint_dict.pickle")
-        self.atom_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "atom_dict.pickle")
-        self.bond_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "bond_dict.pickle")
-        self.edge_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "edge_dict.pickle")
-        self.word_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "sequence_dict.pickle")
-
     def _prepare_resources(self):
+        ensure_data_subfolder(DLKCAT_DATA_DIR)
+
         input_zip_file = DLKCAT_CODE_DIR / "Data" / "input.zip"
         
         if not input_zip_file.exists():
@@ -42,6 +38,12 @@ class DLKcatWrapper(BaseModel):
 
         with zipfile.ZipFile(input_zip_file, 'r') as zip_ref:
             zip_ref.extractall(DLKCAT_DATA_DIR)
+
+        self.fingerprint_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "fingerprint_dict.pickle")
+        self.atom_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "atom_dict.pickle")
+        self.bond_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "bond_dict.pickle")
+        self.edge_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "edge_dict.pickle")
+        self.word_dict = model.load_pickle(DLKCAT_DATA_DIR / "input" / "sequence_dict.pickle")
 
     def predict(self, input_data: pd.DataFrame) -> pd.DataFrame:
         # Based on the predicition_for_input script from DLKcat
@@ -64,10 +66,7 @@ class DLKcatWrapper(BaseModel):
         weight_decay=1e-6
         iteration=100
 
-        if torch.cuda.is_available():
-            device = torch.device('cuda')
-        else:
-            device = torch.device('cpu')
+        device = torch.device(DEVICE)
 
         Kcat_model = model.KcatPrediction(device, n_fingerprint, n_word, 2*dim, layer_gnn, window, layer_cnn, layer_output).to(device)
         Kcat_model.load_state_dict(torch.load(str(DLKCAT_CODE_DIR / "Results" / "output" / "all--radius2--ngram3--dim20--layer_gnn3--window11--layer_cnn3--layer_output3--lr1e-3--lr_decay0.5--decay_interval10--weight_decay1e-6--iteration50"), map_location=device))

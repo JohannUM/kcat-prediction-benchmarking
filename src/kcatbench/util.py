@@ -1,13 +1,50 @@
 import os
 import subprocess
+import json
 from pathlib import Path
 from contextlib import contextmanager
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-MODELS_DIR = (ROOT_DIR / "models")
-DATA_DIR = (ROOT_DIR / "data")
-RESULT_DIR = (ROOT_DIR / "results")
+CONFIG_FILE = ROOT_DIR / "config.json"
+
+_config = {}
+if CONFIG_FILE.is_file():
+    with open(CONFIG_FILE, "r") as f:
+        _config = json.load(f)
+
+def _resolve_path(config_key: str, default_folder_name: str) -> Path:
+    """
+    Looks up a path in the config. 
+    If missing, falls back to ROOT_DIR / default_folder_name.
+    Handles both relative and absolute paths in the JSON.
+    """
+    path_str = _config.get(config_key)
+    
+    if path_str:
+        p = Path(path_str)
+        return p if p.is_absolute() else ROOT_DIR / p
+    
+    return ROOT_DIR / default_folder_name
+
+MODELS_DIR = ROOT_DIR / "models"
+DATA_DIR   = _resolve_path("data_dir", "data")
+RESULT_DIR = _resolve_path("results_dir", "results")
+
+DEVICE = _config.get("device", "cuda:0")
+
+
+def ensure_data_subfolder(target_dir: Path) -> None:
+    """
+    Validates that the base DATA_DIR exists and creates the target 
+    subfolder if it is missing.
+    """
+    if not DATA_DIR.exists():
+        raise FileNotFoundError(
+            f"Base data directory not found at: {DATA_DIR}. "
+            "Please ensure the path is configured correctly in config.json."
+        )
+    target_dir.mkdir(parents=True, exist_ok=True)
 
 
 def wget_download(url, output_path, retries=3, timeout=90, show_progress=True):
