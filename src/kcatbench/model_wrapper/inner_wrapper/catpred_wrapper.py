@@ -25,12 +25,10 @@ class CatPredWrapper(BaseModel):
 
         archive_path = CATPRED_DATA_DIR / "capsule_data_update.tar.gz"
 
-        print(f"Downloading data to {archive_path}...")
         result = wget_download(url="https://catpred.s3.us-east-1.amazonaws.com/capsule_data_update.tar.gz", output_path=archive_path)
         if not result['success']:
             raise RuntimeError(result['message'])
         
-        print(f"Extracting archive to {CATPRED_DATA_DIR}...")
         result = extract_tar_gz(archive_path, CATPRED_DATA_DIR)
         if not result['success']:
             archive_path.unlink(missing_ok=True)

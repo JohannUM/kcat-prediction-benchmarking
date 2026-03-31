@@ -21,6 +21,9 @@ data/CataPro/*
 data/CatPred/*
 !data/CatPred/.gitkeep
 
+data/TurNuP/*
+!data/TurNuP/.gitkeep
+
 results/plots/*
 !results/plots/.gitkeep
 

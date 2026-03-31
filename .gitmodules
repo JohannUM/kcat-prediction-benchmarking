@@ -14,3 +14,7 @@
 	path = models/CatPred
 	url = https://github.com/maranasgroup/CatPred.git
 	ignore = dirty
+[submodule "models/TurNuP"]
+	path = models/TurNuP
+	url = https://github.com/AlexanderKroll/kcat_prediction_function.git
+	ignore = dirty

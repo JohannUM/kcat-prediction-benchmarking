@@ -38,6 +38,7 @@ ENV_NAMES=(
   "dlkcat_env"
   "catapro_env"
   "catpred_env"
+  "turnup_env"
   # "mmkcat_env"
 )
 
@@ -46,6 +47,7 @@ ENV_FILES=(
   # "${ROOT_DIR}/environments/mmkcat_environment.yml"
   "${ROOT_DIR}/environments/catapro_environment.yml"
   "${ROOT_DIR}/environments/catpred_environment.yml"
+  "${ROOT_DIR}/environments/turnup_environment.yml"
 )
 
 if [ "${#ENV_NAMES[@]}" -ne "${#ENV_FILES[@]}" ]; then

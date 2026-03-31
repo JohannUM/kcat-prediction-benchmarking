@@ -1,6 +1,7 @@
 import argparse
 import sys
 import traceback
+import pickle
 import pandas as pd
 from pathlib import Path
 from collections.abc import Callable
@@ -21,10 +22,16 @@ def _predict_catpred(input:pd.DataFrame) -> pd.DataFrame:
     model = CatPredWrapper()
     return model.predict(input)
 
+def _predict_turnup(input:pd.DataFrame) -> pd.DataFrame:
+    from kcatbench.model_wrapper.inner_wrapper.turnup_wrapper import TurNuPWrapper
+    model = TurNuPWrapper()
+    return model.predict(input)
+
 PREDICT_HANDLERS: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "dlkcat": _predict_dlkcat,
     "catapro": _predict_catapro,
-    "catpred": _predict_catpred
+    "catpred": _predict_catpred,
+    "turnup": _predict_turnup
 }
 
 def run_predict(model:str, input_path:Path, output_path:Path):
@@ -32,9 +39,14 @@ def run_predict(model:str, input_path:Path, output_path:Path):
         raise ValueError(f"Unknown model '{model}'.")
     
     try:
-        input = pd.read_csv(input_path, sep="\t")
+        with open(input_path, 'rb') as f:
+            input = pd.DataFrame(pickle.load(f))
+
         output = PREDICT_HANDLERS[model](input)
-        output.to_csv(output_path, sep="\t", index=False)
+
+        with open(output_path, 'wb') as f:
+            pickle.dump(output.to_dict('records'), f)
+
     except Exception as e:
         print(f"--- WORKER EXCEPTION IN MODEL: {model} ---", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)

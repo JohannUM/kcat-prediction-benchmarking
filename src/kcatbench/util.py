@@ -79,3 +79,23 @@ def work_in_dir(path):
         yield
     finally:
         os.chdir(origin)
+
+@contextmanager
+def force_torch_load_device(target_device: str):
+    """
+    Temporarily hijacks torch.load to force a specific map_location.
+    """
+    import torch 
+    
+    original_load = torch.load
+    
+    def patched_load(*args, **kwargs):
+        kwargs['map_location'] = target_device
+        return original_load(*args, **kwargs)
+        
+    torch.load = patched_load
+    
+    try:
+        yield
+    finally:
+        torch.load = original_load

@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import subprocess
 import tempfile
+import pickle
 from pathlib import Path
 
 from kcatbench.model_wrapper.base_model import BaseModel
@@ -9,7 +10,8 @@ from kcatbench.model_wrapper.base_model import BaseModel
 ENVIRONMENT_NAMES: dict[str, str] = {
     "dlkcat": "dlkcat_env",
     "catapro": "catapro_env",
-    "catpred": "catpred_env"
+    "catpred": "catpred_env",
+    "turnup": "turnup_env"
 }
 
 class Model(BaseModel):
@@ -43,10 +45,11 @@ class Model(BaseModel):
     def predict(self, input_data:pd.DataFrame) -> pd.DataFrame:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            input_path = tmpdir / "input.tsv"
-            output_path = tmpdir / "output.tsv"
+            input_path = tmpdir / "input.pkl"
+            output_path = tmpdir / "output.pkl"
 
-            input_data.to_csv(input_path, sep="\t", index=False)
+            with open(input_path, 'wb') as f:
+                pickle.dump(input_data.to_dict('records'), f)
 
             cmd = [
                 "conda", "run", "-n", self.env_name, "--no-capture-output",
@@ -64,4 +67,5 @@ class Model(BaseModel):
             if(result.returncode != 0):
                 raise RuntimeError(f"Model {self.model_name} failed:\nOUTPUT:\n{result.stdout}\n\nERROR:\n{result.stderr}")
 
-            return pd.read_csv(output_path, sep="\t")
+            with open(output_path, 'rb') as f:
+                return pd.DataFrame(pickle.load(f))

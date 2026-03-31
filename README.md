@@ -30,4 +30,6 @@ pip install -e .
 | ------ | --------------- | ------------------------------------------------------------------------------------ |
 | DLKcat | `models/DLKcat` | [https://github.com/SysBioChalmers/DLKcat](https://github.com/SysBioChalmers/DLKcat) |
 | MMKcat | `models/MMKcat` | [https://github.com/ProEcho1/MMKcat](https://github.com/ProEcho1/MMKcat) |
-| CataPro | `models/CataPro` | [https://github.com/zchwang/CataPro.git](https://github.com/zchwang/CataPro.git) |
+| CataPro | `models/CataPro` | [https://github.com/zchwang/CataPro](https://github.com/zchwang/CataPro) |
+| CatPred | `models/CatPred` | [https://github.com/maranasgroup/CatPred](https://github.com/maranasgroup/CatPred) |
+| TurNuP | `models/TurNuP` | [https://github.com/AlexanderKroll/kcat_prediction_function](https://github.com/AlexanderKroll/kcat_prediction_function) |
