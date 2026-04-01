@@ -27,11 +27,17 @@ def _predict_turnup(input:pd.DataFrame) -> pd.DataFrame:
     model = TurNuPWrapper()
     return model.predict(input)
 
+def _predict_unikp(input:pd.DataFrame) -> pd.DataFrame:
+    from kcatbench.model_wrapper.inner_wrapper.unikp_wrapper import UniKPWrapper
+    model = UniKPWrapper()
+    return model.predict(input)
+
 PREDICT_HANDLERS: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "dlkcat": _predict_dlkcat,
     "catapro": _predict_catapro,
     "catpred": _predict_catpred,
-    "turnup": _predict_turnup
+    "turnup": _predict_turnup,
+    "unikp": _predict_unikp
 }
 
 def run_predict(model:str, input_path:Path, output_path:Path):

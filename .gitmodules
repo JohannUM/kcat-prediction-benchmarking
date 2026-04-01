@@ -18,3 +18,7 @@
 	path = models/TurNuP
 	url = https://github.com/AlexanderKroll/kcat_prediction_function.git
 	ignore = dirty
+[submodule "models/UniKP"]
+	path = models/UniKP
+	url = https://github.com/Luo-SynBioLab/UniKP.git
+	ignore = dirty

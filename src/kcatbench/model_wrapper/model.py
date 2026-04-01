@@ -11,7 +11,8 @@ ENVIRONMENT_NAMES: dict[str, str] = {
     "dlkcat": "dlkcat_env",
     "catapro": "catapro_env",
     "catpred": "catpred_env",
-    "turnup": "turnup_env"
+    "turnup": "turnup_env",
+    "unikp": "unikp_env"
 }
 
 class Model(BaseModel):

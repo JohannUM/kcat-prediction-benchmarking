@@ -21,12 +21,6 @@ class TurNuPWrapper(BaseModel):
     def _prepare_resources(self):
         ensure_data_subfolder(TURNUP_DATA_DIR)
 
-        expected_data_link = TURNUP_CODE_DIR / "data"
-
-        if not expected_data_link.exists():
-            expected_data_link.symlink_to((TURNUP_DATA_DIR / "data"), target_is_directory=True)
-            print(f"Created symlink: {expected_data_link} -> {(TURNUP_DATA_DIR / 'data')}")
-
         success_marker = TURNUP_DATA_DIR / ".setup_complete"
         if success_marker.exists():
             return
