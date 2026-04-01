@@ -2,10 +2,10 @@ name: dlkcat_env
 channels:
   - conda-forge
 dependencies:
-  - python=3.13.10
-  - pytorch
-  - numpy
-  - requests
-  - scikit-learn
-  - pandas
-  - rdkit
+  - conda-forge::python=3.13.10
+  - conda-forge::pytorch=2.10.0=cuda*
+  - conda-forge::numpy=2.4.3
+  - conda-forge::requests=2.33.0
+  - conda-forge::scikit-learn=1.8.0
+  - conda-forge::pandas=3.0.1
+  - conda-forge::rdkit=2025.09.6

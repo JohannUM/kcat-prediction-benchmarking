@@ -2,12 +2,12 @@ name: turnup_env
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
-  - pip
-  - py-xgboost=1.6.1
-  - rdkit=2020.09.1
-  - pytorch=1.11.0
-  - pandas
-  - numpy
+  - conda-forge::python=3.9.23
+  - conda-forge::pip=25.2
+  - conda-forge::py-xgboost=1.6.1
+  - conda-forge::rdkit=2020.09.1
+  - conda-forge::pytorch=1.11.0=cuda*
+  - conda-forge::pandas=2.3.1
+  - conda-forge::numpy=1.26.4
   - pip:
     - fair-esm==0.4.0

@@ -2,13 +2,13 @@ name: kcatbench
 channels:
   - conda-forge
 dependencies:
-  - python=3.14.2
-  - pandas
-  - numpy
-  - seaborn
-  - matplotlib
-  - ipykernel
-  - scikit-learn
-  - scipy
-  - upsetplot
-  - img2pdf
+  - conda-forge::python=3.14.2
+  - conda-forge::pandas=3.0.1
+  - conda-forge::numpy=2.4.3
+  - conda-forge::seaborn=0.13.2
+  - conda-forge::matplotlib=3.10.8
+  - conda-forge::ipykernel=7.2.0
+  - conda-forge::scikit-learn=1.8.0
+  - conda-forge::scipy=1.17.1
+  - conda-forge::upsetplot=0.9.0
+  - conda-forge::img2pdf=0.6.1
