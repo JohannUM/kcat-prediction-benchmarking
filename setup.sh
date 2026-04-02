@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Initialize conda
 if command -v conda >/dev/null 2>&1; then
   CONDA_BASE="$(conda info --base)"
 else
@@ -39,15 +38,17 @@ ENV_NAMES=(
   "catapro_env"
   "catpred_env"
   "turnup_env"
+  "unikp_env"
   # "mmkcat_env"
 )
 
 ENV_FILES=(
   "${ROOT_DIR}/environments/dlkcat_environment.yml"
-  # "${ROOT_DIR}/environments/mmkcat_environment.yml"
   "${ROOT_DIR}/environments/catapro_environment.yml"
   "${ROOT_DIR}/environments/catpred_environment.yml"
   "${ROOT_DIR}/environments/turnup_environment.yml"
+  "${ROOT_DIR}/environments/unikp_environment.yml"
+  # "${ROOT_DIR}/environments/mmkcat_environment.yml"
 )
 
 if [ "${#ENV_NAMES[@]}" -ne "${#ENV_FILES[@]}" ]; then
@@ -76,9 +77,6 @@ for i in "${!ENV_FILES[@]}"; do
       else
           echo "Warning: models/CatPred directory not found. Skipping submodule install."
       fi
-      ;;
-      
-    "catapro_env")
       ;;
 
     *)

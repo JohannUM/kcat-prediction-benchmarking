@@ -13,6 +13,7 @@ This project is aimed to provide easy and automated installation for **kcat pred
 | CataPro | `models/CataPro` | [https://github.com/zchwang/CataPro](https://github.com/zchwang/CataPro) |
 | CatPred | `models/CatPred` | [https://github.com/maranasgroup/CatPred](https://github.com/maranasgroup/CatPred) |
 | TurNuP | `models/TurNuP` | [https://github.com/AlexanderKroll/kcat_prediction_function](https://github.com/AlexanderKroll/kcat_prediction_function) |
+| UniKP | `models/UniKP` | [https://github.com/Luo-SynBioLab/UniKP](https://github.com/Luo-SynBioLab/UniKP) |
 
 ## Requirements
 
