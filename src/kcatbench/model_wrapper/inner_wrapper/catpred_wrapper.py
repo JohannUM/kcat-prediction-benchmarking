@@ -42,22 +42,28 @@ class CatPredWrapper(BaseModel):
 
     def predict(self, input_data: pd.DataFrame):
         with work_in_dir(CATPRED_CODE_DIR):
-            outfile = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR / "data" / "pretrained" / "production" / "kcat"))
+            outfile, clean_data = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR / "data" / "pretrained" / "production" / "kcat"))
             if outfile is None:
                 raise RuntimeError("outfile is none")
             
             os.system("export PROTEIN_EMBED_USE_CPU=0; bash ./predict.sh")
 
-            output_final = self._get_predictions("kcat", outfile)
+            output_catpred = self._get_predictions("kcat", outfile)
 
-        return output_final
+        output = input_data.copy()
+        output['catpred_kcat'] = pd.NA
+        output.loc[clean_data["valid_indices"], 'catpred_kcat'] = output_catpred['Prediction_(s^(-1))'].tolist()
+
+        return output
     
     def _create_csv_sh(self, parameter, input_data:pd.DataFrame, checkpoint_dir):
-        smiles_list = input_data['smiles']
-        seq_list = input_data['sequence']
+
+        clean_data = self._prepare_data(input_data)
+        # smiles_list = input_data['smiles']
+        # seq_list = input_data['sequence']
         smiles_list_new = []
 
-        for i, smi in enumerate(smiles_list):
+        for i, smi in enumerate(clean_data["substrates"]):
             try:
                 mol = Chem.MolFromSmiles(smi)
                 smi = Chem.MolToSmiles(mol)
@@ -70,7 +76,7 @@ class CatPredWrapper(BaseModel):
                 return None
 
         valid_aas = set('ACDEFGHIKLMNPQRSTVWY')
-        for i, seq in enumerate(seq_list):
+        for i, seq in enumerate(clean_data["sequence"]):
             if not set(seq).issubset(valid_aas):
                 print(f'Invalid Enzyme sequence input in row {i}!')
                 print('Correct your input! Exiting..')
@@ -79,7 +85,7 @@ class CatPredWrapper(BaseModel):
         input_file_new_path = str(CATPRED_DATA_DIR / "kcat_prediction_input.csv")
         df = pd.DataFrame()
         df['SMILES'] = smiles_list_new
-        df['sequence'] = seq_list
+        df['sequence'] = clean_data["sequence"]
         df['pdbpath'] = [f"sequence_{i}" for i in range(len(df))]
         df.to_csv(input_file_new_path)
 
@@ -95,7 +101,7 @@ class CatPredWrapper(BaseModel):
             python predict.py --test_path ${{TEST_FILE_PREFIX}}.csv --preds_path ${{TEST_FILE_PREFIX}}_output.csv --checkpoint_dir $CHECKPOINT_DIR --uncertainty_method mve --smiles_column SMILES --individual_ensemble_predictions --protein_records_path $RECORDS_FILE --gpu {gpu_id}
             ''')
 
-        return input_file_new_path[:-4]+'_output.csv'
+        return input_file_new_path[:-4]+'_output.csv', clean_data
     
     def _get_predictions(self, parameter, outfile):
         """

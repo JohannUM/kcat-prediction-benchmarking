@@ -56,15 +56,9 @@ class DLKcatWrapper(BaseModel):
 
         dim=10
         layer_gnn=3
-        side=5
         window=11
         layer_cnn=3
         layer_output=3
-        lr=1e-3
-        lr_decay=0.5
-        decay_interval=10
-        weight_decay=1e-6
-        iteration=100
 
         device = torch.device(DEVICE)
 
@@ -72,36 +66,14 @@ class DLKcatWrapper(BaseModel):
         Kcat_model.load_state_dict(torch.load(str(DLKCAT_CODE_DIR / "Results" / "output" / "all--radius2--ngram3--dim20--layer_gnn3--window11--layer_cnn3--layer_output3--lr1e-3--lr_decay0.5--decay_interval10--weight_decay1e-6--iteration50"), map_location=device))
         predictor = Predictor(Kcat_model)
 
-        required_cols = {"name", "smiles", "sequence"}
-        missing = required_cols - set(input_data.columns)
-
-        if missing:
-            raise ValueError(f"Missing required columns in input data: {missing}")
+        clean_data = self._prepare_data(input_data)
 
         results = []
 
-        for row in input_data.itertuples(index=True):
-            name = row.name
-            smiles = row.smiles
-            sequence = row.sequence
-
-            result = {
-                "name": name,
-                "smiles": smiles,
-                "sequence": sequence,
-                "kcat_prediction": pd.NA,
-            }
-
-            if pd.isna(smiles):
-                if pd.isna(name):
-                    results.append(result)
-                    continue
-                else:
-                    smiles = self.get_smiles(name)
-                    
-            if pd.isna(sequence):
-                results.append(result)
-                continue
+        for id, idx in enumerate(clean_data["valid_indices"]):
+            
+            smiles = clean_data["substrates"][id]
+            sequence = clean_data["sequence"][id]
 
             try:
                 mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
@@ -126,14 +98,17 @@ class DLKcatWrapper(BaseModel):
                 kcat_log_value = prediction.item()
                 kcat_value = '%.4f' %math.pow(2, kcat_log_value)
 
-                result["kcat_prediction"] = kcat_value
-                results.append(result)
+                results.append(kcat_value)
             except:
                 print("EXCEPTION")
-                results.append(result)
+                results.append(pd.NA)
                 continue
+        
+        output = input_data.copy()
+        output['dlkcat_kcat'] = pd.NA
+        output.loc[clean_data["valid_indices"], 'dlkcat_kcat'] = results
 
-        return pd.DataFrame(results)
+        return output
     
     def get_smiles(name):
         try :

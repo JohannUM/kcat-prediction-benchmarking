@@ -44,12 +44,15 @@ class UniKPWrapper(BaseModel):
         success_marker.touch()
 
 
-    def predict(self, input_df: pd.DataFrame) -> pd.DataFrame:
-        smiles_list, seq_list, valid_indices = self._prepare_unikp_data(input_df)
+    def predict(self, input_data: pd.DataFrame) -> pd.DataFrame:
+
+        output = input_data.copy()
+
+        clean_data = self._prepare_data(input_data)
         
-        if not valid_indices:
-            input_df['unikp_prediction'] = pd.NA
-            return input_df
+        if not clean_data["valid_indices"]:
+            output['unikp_kcat'] = pd.NA
+            return output
         
         with work_in_dir(UNIKP_CODE_DIR):
             from build_vocab import WordVocab
@@ -57,8 +60,8 @@ class UniKPWrapper(BaseModel):
             from utils import split
             from transformers import T5EncoderModel, T5Tokenizer
             
-            smiles_vec = self._smiles_to_vec(smiles_list, WordVocab, TrfmSeq2seq, split)
-            seq_vec = self._seq_to_vec(seq_list, T5Tokenizer, T5EncoderModel)
+            smiles_vec = self._smiles_to_vec(clean_data["substrates"], WordVocab, TrfmSeq2seq, split)
+            seq_vec = self._seq_to_vec(clean_data["sequence"], T5Tokenizer, T5EncoderModel)
             
         fused_vector = np.concatenate((smiles_vec, seq_vec), axis=1)
         
@@ -69,10 +72,10 @@ class UniKPWrapper(BaseModel):
         pre_label = xgb_model.predict(fused_vector)
         pre_label_pow = [math.pow(10, p) for p in pre_label]
         
-        input_df['unikp_prediction'] = pd.NA
-        input_df.loc[valid_indices, 'unikp_prediction'] = pre_label_pow
+        output['unikp_kcat'] = pd.NA
+        output.loc[clean_data["valid_indices"], 'unikp_kcat'] = pre_label_pow
         
-        return input_df
+        return output
     
 
     def _prepare_unikp_data(self, df: pd.DataFrame):

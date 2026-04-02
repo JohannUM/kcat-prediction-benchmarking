@@ -55,18 +55,14 @@ class TurNuPWrapper(BaseModel):
         with work_in_dir(target_cwd), force_torch_load_device(DEVICE):
             from kcat_prediction import kcat_predicton
 
-            subs_list, prods_list, enz_list, valid_indices = self._prepare_turnup_input(input_data)
-
-            print(subs_list)
-            print(prods_list)
-            print(enz_list)
+            clean_data = self._prepare_data(input_data, products_required=True, multiple_smiles=True)
             
-            result = kcat_predicton(substrates = subs_list, products = prods_list, enzymes = enz_list)
+            result = kcat_predicton(substrates = clean_data["substrates"], products = clean_data["products"], enzymes = clean_data["sequence"])
 
             predictions = result["kcat [s^(-1)]"].to_list()
 
             output['turnup_kcat'] = pd.NA
-            output.loc[valid_indices, 'turnup_kcat'] = predictions
+            output.loc[clean_data["valid_indices"], 'turnup_kcat'] = predictions
 
         return output
         

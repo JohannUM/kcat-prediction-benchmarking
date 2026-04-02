@@ -47,7 +47,9 @@ class CataProWrapper(BaseModel):
         ProtT5_model = str(CATAPRO_DATA_DIR / "prot_t5_xl_uniref50")
         MolT5_model = str(CATAPRO_DATA_DIR / "molt5-base-smiles2caption")
 
-        smiles_list, dataloader = self._get_datasets(input_data, ProtT5_model, MolT5_model)
+        clean_data = self._prepare_data(input_data)
+
+        dataloader = self._get_datasets(clean_data, ProtT5_model, MolT5_model)
 
         pred_kcat_list = []
         for fold in range(10):    
@@ -60,14 +62,15 @@ class CataProWrapper(BaseModel):
         pred_kcat = np.mean(np.concatenate(pred_kcat_list, axis=1), axis=1, keepdims=True)
         pred_kcat_linear = np.power(10, pred_kcat)
 
-        input_data_copy = input_data.copy()
-        input_data_copy["catapro_kcat"] = pred_kcat_linear
-        
-        return input_data_copy
+        output = input_data.copy()
+        output['catapro_kcat'] = pd.NA
+        output.loc[clean_data["valid_indices"], 'catapro_kcat'] = pred_kcat_linear
+
+        return output
     
-    def _get_datasets(self, input_data: pd.DataFrame, ProtT5_model, MolT5_model):
-        sequences = input_data["sequence"].values 
-        smiles = input_data["smiles"].values
+    def _get_datasets(self, input_data, ProtT5_model, MolT5_model):
+        sequences = input_data["sequence"]
+        smiles = input_data["substrates"]
         
         seq_ProtT5 = Seq_to_vec(sequences, ProtT5_model)
         smi_molT5 = get_molT5_embed(smiles, MolT5_model)
@@ -77,7 +80,7 @@ class CataProWrapper(BaseModel):
         datasets = EnzymeDatasets(feats)
         dataloader = DataLoader(datasets)
         
-        return smiles, dataloader
+        return dataloader
     
     def _inference(self, kcat_model, dataloader, device="cuda:0"):
         kcat_model.eval()
