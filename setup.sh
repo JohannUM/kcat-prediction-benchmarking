@@ -34,21 +34,21 @@ fi
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 ENV_NAMES=(
+  "kcatbench"
   "dlkcat_env"
   "catapro_env"
   "catpred_env"
   "turnup_env"
   "unikp_env"
-  # "mmkcat_env"
 )
 
 ENV_FILES=(
+  "${ROOT_DIR}/environments/kcatbench_environment.yml"
   "${ROOT_DIR}/environments/dlkcat_environment.yml"
   "${ROOT_DIR}/environments/catapro_environment.yml"
   "${ROOT_DIR}/environments/catpred_environment.yml"
   "${ROOT_DIR}/environments/turnup_environment.yml"
   "${ROOT_DIR}/environments/unikp_environment.yml"
-  # "${ROOT_DIR}/environments/mmkcat_environment.yml"
 )
 
 if [ "${#ENV_NAMES[@]}" -ne "${#ENV_FILES[@]}" ]; then

@@ -27,13 +27,16 @@ data/TurNuP/*
 data/UniKP/*
 !data/UniKP/.gitkeep
 
-results/plots/*
-!results/plots/.gitkeep
-
 data/results/*
 
 data/brenda/*
 !data/brenda/.gitkeep
+
+results/plots/*
+!results/plots/.gitkeep
+
+results/predictions/*
+!results/predictions/.gitkeep
 
 # Python cache / build
 __pycache__/

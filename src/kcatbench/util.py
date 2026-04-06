@@ -1,8 +1,11 @@
 import os
 import subprocess
 import json
+import ast
 from pathlib import Path
 from contextlib import contextmanager
+
+import pandas as pd
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -32,6 +35,69 @@ DATA_DIR   = _resolve_path("data_dir", "data")
 RESULT_DIR = _resolve_path("results_dir", "results")
 
 DEVICE = _config.get("device", "cuda:0")
+
+
+def _parse_list_str_cell(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+
+    if pd.isna(value):
+        return []
+
+    if not isinstance(value, str):
+        raise ValueError(f"Expected a string-encoded list, got {type(value).__name__}.")
+
+    text = value.strip()
+    if not text:
+        return []
+
+    parsed = None
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        try:
+            parsed = ast.literal_eval(text)
+        except (ValueError, SyntaxError) as exc:
+            raise ValueError("Could not parse list value.") from exc
+
+    if not isinstance(parsed, list):
+        raise ValueError(f"Expected list value, got {type(parsed).__name__}.")
+
+    return [str(item) for item in parsed]
+
+
+def _parse_list_columns(df: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
+    for column in columns:
+        if column not in df.columns:
+            continue
+
+        parsed_values: list[list[str]] = []
+        for row_index, value in df[column].items():
+            try:
+                parsed_values.append(_parse_list_str_cell(value))
+            except ValueError as exc:
+                raise ValueError(
+                    f"Failed to parse '{column}' at row {row_index}: {value!r}."
+                ) from exc
+
+        df[column] = parsed_values
+
+    return df
+
+
+def read_csv_with_schema(csv_path: Path | str) -> pd.DataFrame:
+    """
+    Read a CSV file and parse schema-specific list columns.
+
+    The columns 'substrates' and 'products' are parsed as list[str] values.
+    Other columns are read with pandas defaults.
+    """
+    csv_path = Path(csv_path)
+    if not csv_path.exists():
+        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+    return _parse_list_columns(df, ("substrates", "products"))
 
 
 def ensure_data_subfolder(target_dir: Path) -> None:
