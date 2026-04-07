@@ -12,3 +12,5 @@ dependencies:
   - conda-forge::scipy=1.17.1
   - conda-forge::upsetplot=0.9.0
   - conda-forge::img2pdf=0.6.1
+  - conda-forge::requests=2.33.1
+  - conda-forge::pyarrow=23.0.1

@@ -5,6 +5,9 @@ def __getattr__(name):
     if name == "plotting":
         import importlib
         return importlib.import_module(".plotting", __name__)
+    elif name == "dataset":
+        import importlib
+        return importlib.import_module(".dataset", __name__)
     raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
 
 __all__ = [

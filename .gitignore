@@ -27,10 +27,11 @@ data/TurNuP/*
 data/UniKP/*
 !data/UniKP/.gitkeep
 
-data/results/*
-
 data/brenda/*
 !data/brenda/.gitkeep
+
+data/enzyextract/*
+!data/enzyextract/.gitkeep
 
 results/plots/*
 !results/plots/.gitkeep

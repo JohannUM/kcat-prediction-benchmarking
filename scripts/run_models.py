@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import gc
-import importlib
 import json
 import logging
 import os
@@ -166,16 +165,6 @@ def atomic_write_csv(df: pd.DataFrame, output_path: Path) -> None:
 	tmp_path.replace(output_path)
 
 
-def release_memory() -> None:
-	gc.collect()
-	try:
-		torch = importlib.import_module("torch")
-		if torch.cuda.is_available():
-			torch.cuda.empty_cache()
-	except Exception:
-		pass
-
-
 def run_models(
 	model_ids: Sequence[str],
 	initial_df: pd.DataFrame,
@@ -210,7 +199,7 @@ def run_models(
 		finally:
 			if model is not None:
 				del model
-			release_memory()
+			gc.collect()
 			atomic_write_csv(current_df, output_path)
 			logger.info("Checkpoint written after model %s to %s", model_id, output_path)
 
