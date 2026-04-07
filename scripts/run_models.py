@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import sys
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -84,17 +83,13 @@ def normalize_model_ids(model_ids: Sequence[str]) -> list[str]:
 	return normalized
 
 
-def build_default_output_path() -> Path:
-	timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-	run_id = uuid.uuid4().hex[:8]
-	return PREDICTIONS_DIR / f"output_{timestamp}_{run_id}.csv"
+def build_default_output_path(timestamp: str) -> Path:
+	return PREDICTIONS_DIR / f"output_{timestamp}.csv"
 
 
-def resolve_paths(output_name: Optional[str], log_file: Optional[Path]) -> tuple[Path, Path, str]:
-	run_id = uuid.uuid4().hex[:8]
-
+def resolve_paths(output_name: Optional[str], log_file: Optional[Path], timestamp: str) -> tuple[Path, Path]:
 	if output_name is None:
-		output_path = build_default_output_path()
+		output_path = build_default_output_path(timestamp)
 	else:
 		output_name_path = Path(output_name)
 		if output_name_path.name != output_name or output_name_path.parent != Path("."):
@@ -104,13 +99,12 @@ def resolve_paths(output_name: Optional[str], log_file: Optional[Path]) -> tuple
 		output_path = PREDICTIONS_DIR / output_name
 
 	if log_file is None:
-		timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-		log_file = PREDICTIONS_DIR / f"{output_path.stem}_{timestamp}_{run_id}.log"
+		log_file = PREDICTIONS_DIR / f"{output_path.stem}.log"
 
 	PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 	log_file.parent.mkdir(parents=True, exist_ok=True)
-	return output_path, log_file, run_id
+	return output_path, log_file
 
 
 def configure_logging(log_file: Path) -> logging.Logger:
@@ -216,7 +210,7 @@ def run_models(
 
 
 def write_status_file(output_path: Path, status_payload: dict[str, Any]) -> Path:
-	status_path = output_path.with_name(f"{output_path.name}.status.json")
+	status_path = output_path.with_name(f"{output_path.stem}.status.json")
 	with open(status_path, "w", encoding="utf-8") as f:
 		json.dump(status_payload, f, indent=2)
 	return status_path
@@ -224,24 +218,23 @@ def write_status_file(output_path: Path, status_payload: dict[str, Any]) -> Path
 
 def main(argv: Optional[list[str]] = None) -> int:
 	args = parse_args(argv)
+	run_start = datetime.now()
+	run_timestamp = run_start.strftime("%Y%m%d_%H%M%S")
 
 	try:
 		model_ids = normalize_model_ids(args.models)
 		input_path = args.input_path.resolve()
-		output_path, log_file, run_id = resolve_paths(args.output_name, args.log_file)
+		output_path, log_file = resolve_paths(args.output_name, args.log_file, run_timestamp)
 	except Exception as exc:
 		print(f"Argument validation failed: {exc}", file=sys.stderr)
 		return 2
 
 	logger = configure_logging(log_file)
-	logger.info("Run id: %s", run_id)
 	logger.info("Input file: %s", input_path)
 	logger.info("Output file: %s", output_path)
 	logger.info("Log file: %s", log_file)
 	logger.info("Model order: %s", model_ids)
 	logger.info("Process id: %s", os.getpid())
-
-	run_start = datetime.now()
 
 	try:
 		input_df = load_input_dataframe(input_path)
@@ -263,7 +256,6 @@ def main(argv: Optional[list[str]] = None) -> int:
 	duration_seconds = (run_end - run_start).total_seconds()
 
 	status_payload = {
-		"run_id": run_id,
 		"input": str(input_path),
 		"output": str(output_path),
 		"log_file": str(log_file),

@@ -1,11 +1,12 @@
 import argparse
 import sys
 import traceback
-import pickle
 import pandas as pd
 from pathlib import Path
 from collections.abc import Callable
 from typing import Optional
+
+from kcatbench.util import read_csv_with_schema
 
 def _predict_dlkcat(input:pd.DataFrame) -> pd.DataFrame:
     from kcatbench.model_wrapper.inner_wrapper.dlkcat_wrapper import DLKcatWrapper
@@ -45,13 +46,11 @@ def run_predict(model:str, input_path:Path, output_path:Path):
         raise ValueError(f"Unknown model '{model}'.")
     
     try:
-        with open(input_path, 'rb') as f:
-            input = pd.DataFrame(pickle.load(f))
+        input = read_csv_with_schema(input_path)
 
         output = PREDICT_HANDLERS[model](input)
 
-        with open(output_path, 'wb') as f:
-            pickle.dump(output.to_dict('records'), f)
+        output.to_csv(output_path, index=False)
 
     except Exception as e:
         print(f"--- WORKER EXCEPTION IN MODEL: {model} ---", file=sys.stderr)

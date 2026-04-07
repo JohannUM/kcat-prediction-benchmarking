@@ -14,3 +14,4 @@ dependencies:
   - conda-forge::img2pdf=0.6.1
   - conda-forge::requests=2.33.1
   - conda-forge::pyarrow=23.0.1
+  - conda-forge::rdkit=2026.03.1

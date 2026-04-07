@@ -4,6 +4,7 @@ import json
 import ast
 from pathlib import Path
 from contextlib import contextmanager
+from typing import Union
 
 import pandas as pd
 
@@ -85,7 +86,7 @@ def _parse_list_columns(df: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFr
     return df
 
 
-def read_csv_with_schema(csv_path: Path | str) -> pd.DataFrame:
+def read_csv_with_schema(csv_path: Union[Path, str]) -> pd.DataFrame:
     """
     Read a CSV file and parse schema-specific list columns.
 

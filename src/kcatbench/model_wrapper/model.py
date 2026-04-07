@@ -2,10 +2,10 @@ import os
 import pandas as pd
 import subprocess
 import tempfile
-import pickle
 from pathlib import Path
 
 from kcatbench.model_wrapper.base_model import BaseModel
+from kcatbench.util import read_csv_with_schema
 
 ENVIRONMENT_NAMES: dict[str, str] = {
     "dlkcat": "dlkcat_env",
@@ -46,11 +46,10 @@ class Model(BaseModel):
     def predict(self, input_data:pd.DataFrame) -> pd.DataFrame:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
-            input_path = tmpdir / "input.pkl"
-            output_path = tmpdir / "output.pkl"
+            input_path = tmpdir / "input.csv"
+            output_path = tmpdir / "output.csv"
 
-            with open(input_path, 'wb') as f:
-                pickle.dump(input_data.to_dict('records'), f)
+            input_data.to_csv(input_path, index=False)
 
             cmd = [
                 "conda", "run", "-n", self.env_name, "--no-capture-output",
@@ -68,5 +67,4 @@ class Model(BaseModel):
             if(result.returncode != 0):
                 raise RuntimeError(f"Model {self.model_name} failed:\nOUTPUT:\n{result.stdout}\n\nERROR:\n{result.stderr}")
 
-            with open(output_path, 'rb') as f:
-                return pd.DataFrame(pickle.load(f))
+            return read_csv_with_schema(output_path)

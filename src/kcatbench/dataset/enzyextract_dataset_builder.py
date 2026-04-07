@@ -4,12 +4,34 @@ from pathlib import Path
 
 import pandas as pd
 import requests
+from rdkit import Chem
+from rdkit.Chem.MolStandardize import rdMolStandardize
 
 from kcatbench.util import DATA_DIR, ensure_data_subfolder
 
 
 _RAW_FILENAME = "enzy_extract_complete.parquet"
 _PROCESSED_BASENAME = "enzy_extract_processed"
+
+
+def _standardize_smiles(value: object) -> str:
+    original = "" if value is None else str(value)
+    text = original.strip()
+    if not text:
+        return original
+
+    try:
+        mol = Chem.MolFromSmiles(text)
+        if mol is None:
+            return original
+
+        mol = rdMolStandardize.Cleanup(mol)
+        # mol = rdMolStandardize.FragmentParent(mol)
+        mol = rdMolStandardize.Uncharger().uncharge(mol)
+        mol = rdMolStandardize.TautomerEnumerator().Canonicalize(mol)
+        return Chem.MolToSmiles(mol, canonical=True, isomericSmiles=True)
+    except Exception:
+        return original
 
 
 def _to_singleton_list(value: object) -> list[str]:
@@ -97,6 +119,7 @@ def ee_process_db(path: Path = (DATA_DIR / "enzyextract")):
     df = df.reset_index(drop=True)
 
     df = df.rename(columns={"smiles": "substrates"})
+    df["substrates"] = df["substrates"].apply(_standardize_smiles)
     df["substrates"] = df["substrates"].apply(_to_singleton_list)
 
     csv_path = target_dir / f"{_PROCESSED_BASENAME}.csv"
