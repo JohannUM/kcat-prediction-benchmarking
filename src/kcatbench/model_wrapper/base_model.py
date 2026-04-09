@@ -27,14 +27,16 @@ class BaseModel(ABC):
             products_required (bool, optional): If True, rows without valid product data 
                 are skipped, and a 'products' list is added to the returned dictionary. 
                 Defaults to False.
-            multiple_smiles (bool, optional): If True, joins multiple SMILES strings 
-                within a list using a semicolon (';'). If False, extracts only the first 
-                SMILES string from the list. Defaults to False.
+            multiple_smiles (bool, optional): If True, preserves multiple SMILES strings
+                as a cleaned list[str]. If False, extracts only the first SMILES string
+                from the list. Defaults to False.
 
         Returns:
-            dict[str, list]: A dictionary containing lists of the cleaned data. Guaranteed 
-            to contain the keys 'valid_indices', 'sequence', and 'substrates'. Will also 
-            contain 'products' if `products_required` is True.
+            dict[str, list]: A dictionary containing lists of the cleaned data. Guaranteed
+            to contain the keys 'valid_indices', 'sequence', and 'substrates'.
+            If `multiple_smiles` is True, substrate/product entries are list[str].
+            If `multiple_smiles` is False, substrate/product entries are str.
+            Will also contain 'products' if `products_required` is True.
         """
         
         cleaned_data: dict[str, list] = {
@@ -46,13 +48,13 @@ class BaseModel(ABC):
         if products_required:
             cleaned_data["products"] = []
 
-        def process_smiles(items) -> str:
+        def process_smiles(items):
             if not isinstance(items, list) or not items:
                 return None
             
             if multiple_smiles:
                 valid_items = [str(i).strip() for i in items if pd.notna(i) and str(i).strip()]
-                return ";".join(valid_items) if valid_items else None
+                return valid_items if valid_items else None
             else:
                 first = items[0]
                 return str(first).strip() if pd.notna(first) and str(first).strip() else None

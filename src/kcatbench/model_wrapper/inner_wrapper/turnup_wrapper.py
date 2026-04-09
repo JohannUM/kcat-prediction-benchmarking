@@ -1,5 +1,6 @@
 import sys
 import zipfile
+import logging
 import pandas as pd
 from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, ensure_data_subfolder, force_torch_load_device, wget_download, work_in_dir
 from kcatbench.model_wrapper.base_model import BaseModel
@@ -9,6 +10,9 @@ TURNUP_DATA_DIR = DATA_DIR / "TurNuP"
 
 if str(TURNUP_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(TURNUP_CODE_DIR / "code"))
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class TurNuPWrapper(BaseModel):
@@ -49,6 +53,7 @@ class TurNuPWrapper(BaseModel):
     def predict(self, input_data: pd.DataFrame) -> pd.DataFrame:
         
         output = input_data.copy()
+        output['turnup_kcat'] = pd.NA
 
         target_cwd = TURNUP_CODE_DIR / "code"
 
@@ -56,46 +61,32 @@ class TurNuPWrapper(BaseModel):
             from kcat_prediction import kcat_predicton
 
             clean_data = self._prepare_data(input_data, products_required=True, multiple_smiles=True)
+            if not clean_data["valid_indices"]:
+                LOGGER.warning("TurNuP found no valid rows after preprocessing.")
+                return output
+
+            substrates, products, enzymes, valid_indices = self._prepare_turnup_input(clean_data)
             
-            result = kcat_predicton(substrates = clean_data["substrates"], products = clean_data["products"], enzymes = clean_data["sequence"])
+            result = kcat_predicton(substrates=substrates, products=products, enzymes=enzymes)
 
             predictions = result["kcat [s^(-1)]"].to_list()
 
-            output['turnup_kcat'] = pd.NA
-            output.loc[clean_data["valid_indices"], 'turnup_kcat'] = predictions
+            assign_count = min(len(valid_indices), len(predictions))
+            output.loc[valid_indices[:assign_count], 'turnup_kcat'] = predictions[:assign_count]
+            if assign_count != len(valid_indices) or len(predictions) != len(valid_indices):
+                LOGGER.warning(
+                    "TurNuP prediction count mismatch: expected=%s predicted=%s assigned=%s",
+                    len(valid_indices),
+                    len(predictions),
+                    assign_count,
+                )
 
         return output
         
-    def _prepare_turnup_input(self, df: pd.DataFrame):
-        
-        valid_indices = []
-        substrates_list = []
-        products_list = []
-        enzymes_list = []
+    def _prepare_turnup_input(self, clean_data: dict[str, list]):
+        substrates = [";".join(items) for items in clean_data["substrates"]]
+        products = [";".join(items) for items in clean_data["products"]]
+        enzymes = clean_data["sequence"]
+        valid_indices = clean_data["valid_indices"]
 
-        for idx, row in df.iterrows():
-            subs = row.get('substrates')
-            prods = row.get('products')
-            seq = row.get('sequence')
-
-            if pd.isna(seq) or not isinstance(seq, str) or not seq.strip():
-                continue
-
-            if not isinstance(subs, list) or len(subs) == 0:
-                continue
-
-            if not isinstance(prods, list) or len(prods) == 0:
-                continue
-
-            joined_subs = ";".join([str(s).strip() for s in subs if pd.notna(s) and str(s).strip()])
-            joined_prods = ";".join([str(p).strip() for p in prods if pd.notna(p) and str(p).strip()])
-
-            if not joined_subs or not joined_prods:
-                continue
-
-            valid_indices.append(idx)
-            substrates_list.append(joined_subs)
-            products_list.append(joined_prods)
-            enzymes_list.append(seq)
-
-        return substrates_list, products_list, enzymes_list, valid_indices
+        return substrates, products, enzymes, valid_indices

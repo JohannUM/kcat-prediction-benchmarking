@@ -1,4 +1,6 @@
 import os
+import logging
+import subprocess
 from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, extract_tar_gz, wget_download, work_in_dir, ensure_data_subfolder
 
 CATPRED_CODE_DIR = MODELS_DIR / "CatPred"
@@ -8,6 +10,9 @@ from kcatbench.model_wrapper.base_model import BaseModel
 import pandas as pd
 import numpy as np
 from rdkit import Chem
+
+
+LOGGER = logging.getLogger(__name__)
 
 class CatPredWrapper(BaseModel):
     name = "CatPred"
@@ -41,53 +46,137 @@ class CatPredWrapper(BaseModel):
             print(f"Warning: Could not remove archive file: {e}")
 
     def predict(self, input_data: pd.DataFrame):
-        with work_in_dir(CATPRED_CODE_DIR):
-            outfile, clean_data = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR / "data" / "pretrained" / "production" / "kcat"))
-            if outfile is None:
-                raise RuntimeError("outfile is none")
-            
-            os.system("export PROTEIN_EMBED_USE_CPU=0; bash ./predict.sh")
-
-            output_catpred = self._get_predictions("kcat", outfile)
-
         output = input_data.copy()
         output['catpred_kcat'] = pd.NA
-        output.loc[clean_data["valid_indices"], 'catpred_kcat'] = output_catpred['Prediction_(s^(-1))'].tolist()
+
+        with work_in_dir(CATPRED_CODE_DIR):
+            outfile, clean_data = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR / "data" / "pretrained" / "production" / "kcat"))
+            if outfile is None or not clean_data["valid_indices"]:
+                LOGGER.warning("CatPred found no valid rows after validation. Returning NA predictions.")
+                return output
+
+            run_result = self._run_prediction_script()
+            if run_result.returncode != 0:
+                LOGGER.error(
+                    "CatPred predict.sh failed with exit code %s. stdout=%s stderr=%s",
+                    run_result.returncode,
+                    run_result.stdout,
+                    run_result.stderr,
+                )
+                return output
+
+            try:
+                output_catpred = self._get_predictions("kcat", outfile)
+            except Exception:
+                LOGGER.exception("CatPred failed to parse prediction output file: %s", outfile)
+                return output
+
+        prediction_col = 'Prediction_(s^(-1))'
+        if prediction_col not in output_catpred.columns:
+            LOGGER.error("CatPred output is missing expected column: %s", prediction_col)
+            return output
+
+        predictions = output_catpred[prediction_col].tolist()
+        target_indices = clean_data["valid_indices"]
+        assign_count = min(len(target_indices), len(predictions))
+        if assign_count == 0:
+            LOGGER.warning("CatPred produced no assignable predictions after filtering.")
+            return output
+
+        output.loc[target_indices[:assign_count], 'catpred_kcat'] = predictions[:assign_count]
+        if assign_count != len(target_indices) or len(predictions) != len(target_indices):
+            LOGGER.warning(
+                "CatPred prediction count mismatch: expected=%s predicted=%s assigned=%s",
+                len(target_indices),
+                len(predictions),
+                assign_count,
+            )
 
         return output
+
+    def _empty_clean_data(self):
+        return {
+            "valid_indices": [],
+            "substrates": [],
+            "sequence": [],
+        }
+
+    def _run_prediction_script(self):
+        env = os.environ.copy()
+        env["PROTEIN_EMBED_USE_CPU"] = "0"
+        return subprocess.run(
+            ["bash", "./predict.sh"],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def _canonicalize_smiles(self, smiles: str, parameter: str):
+        try:
+            mol = Chem.MolFromSmiles(smiles)
+        except Exception:
+            return None
+
+        if mol is None:
+            return None
+
+        try:
+            canonical = Chem.MolToSmiles(mol)
+        except Exception:
+            return None
+
+        if parameter == 'kcat' and '.' in canonical:
+            canonical = '.'.join(sorted(canonical.split('.')))
+        return canonical
+
+    def _is_valid_sequence(self, sequence: str, valid_aas: set):
+        return isinstance(sequence, str) and bool(sequence) and set(sequence).issubset(valid_aas)
     
     def _create_csv_sh(self, parameter, input_data:pd.DataFrame, checkpoint_dir):
 
         clean_data = self._prepare_data(input_data)
-        # smiles_list = input_data['smiles']
-        # seq_list = input_data['sequence']
-        smiles_list_new = []
-
-        for i, smi in enumerate(clean_data["substrates"]):
-            try:
-                mol = Chem.MolFromSmiles(smi)
-                smi = Chem.MolToSmiles(mol)
-                if parameter == 'kcat' and '.' in smi:
-                    smi = '.'.join(sorted(smi.split('.')))
-                smiles_list_new.append(smi)
-            except:
-                print(f'Invalid SMILES input in input row {i}')
-                print('Correct your input! Exiting..')
-                return None
-
         valid_aas = set('ACDEFGHIKLMNPQRSTVWY')
-        for i, seq in enumerate(clean_data["sequence"]):
-            if not set(seq).issubset(valid_aas):
-                print(f'Invalid Enzyme sequence input in row {i}!')
-                print('Correct your input! Exiting..')
-                return None
+        filtered_clean_data = self._empty_clean_data()
+        smiles_list_new = []
+        sequence_list_new = []
+        invalid_smiles_indices = []
+        invalid_sequence_indices = []
+
+        for row_index, smi, seq in zip(
+            clean_data["valid_indices"],
+            clean_data["substrates"],
+            clean_data["sequence"],
+        ):
+            canonical_smiles = self._canonicalize_smiles(smi, parameter)
+            if canonical_smiles is None:
+                invalid_smiles_indices.append(row_index)
+                continue
+
+            if not self._is_valid_sequence(seq, valid_aas):
+                invalid_sequence_indices.append(row_index)
+                continue
+
+            filtered_clean_data["valid_indices"].append(row_index)
+            filtered_clean_data["substrates"].append(canonical_smiles)
+            filtered_clean_data["sequence"].append(seq)
+            smiles_list_new.append(canonical_smiles)
+            sequence_list_new.append(seq)
+
+        if invalid_smiles_indices:
+            LOGGER.warning("CatPred skipped invalid SMILES rows: %s", invalid_smiles_indices)
+        if invalid_sequence_indices:
+            LOGGER.warning("CatPred skipped invalid sequence rows: %s", invalid_sequence_indices)
+        if not filtered_clean_data["valid_indices"]:
+            LOGGER.warning("CatPred has no valid rows after row-level validation.")
+            return None, filtered_clean_data
 
         input_file_new_path = str(CATPRED_DATA_DIR / "kcat_prediction_input.csv")
         df = pd.DataFrame()
         df['SMILES'] = smiles_list_new
-        df['sequence'] = clean_data["sequence"]
+        df['sequence'] = sequence_list_new
         df['pdbpath'] = [f"sequence_{i}" for i in range(len(df))]
-        df.to_csv(input_file_new_path)
+        df.to_csv(input_file_new_path, index=False)
 
         gpu_id = DEVICE.split(":")[1] if ":" in DEVICE else "0"
 
@@ -101,7 +190,7 @@ class CatPredWrapper(BaseModel):
             python predict.py --test_path ${{TEST_FILE_PREFIX}}.csv --preds_path ${{TEST_FILE_PREFIX}}_output.csv --checkpoint_dir $CHECKPOINT_DIR --uncertainty_method mve --smiles_column SMILES --individual_ensemble_predictions --protein_records_path $RECORDS_FILE --gpu {gpu_id}
             ''')
 
-        return input_file_new_path[:-4]+'_output.csv', clean_data
+        return input_file_new_path[:-4]+'_output.csv', filtered_clean_data
     
     def _get_predictions(self, parameter, outfile):
         """
