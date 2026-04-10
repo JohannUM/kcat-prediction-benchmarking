@@ -15,6 +15,7 @@ import torch as th
 from rdkit import Chem
 from huggingface_hub import snapshot_download
 from kcatbench.model_wrapper.base_model import BaseModel
+from kcatbench.model_wrapper.wrapper_progress import progress_completed, progress_started
 
 from inference.utils import *
 from inference.model import *
@@ -46,6 +47,7 @@ class CataProWrapper(BaseModel):
             snapshot_download(repo_id="laituan245/molt5-base-smiles2caption", local_dir=molt5_dir)
 
     def predict(self, input_data: pd.DataFrame) -> pd.DataFrame:
+        progress_started(LOGGER, "catapro.predict", "Catapro prediction started rows=%s.", len(input_data.index))
 
         model_dpath = str(CATAPRO_CODE_DIR / "models")
         batch_size = 64
@@ -60,6 +62,7 @@ class CataProWrapper(BaseModel):
 
         clean_data = self._prepare_data(input_data)
         if not clean_data["valid_indices"]:
+            progress_completed(LOGGER, "catapro.validation", "Catapro validation completed valid_rows=0.")
             LOGGER.warning("Catapro found no rows after initial preprocessing.")
             return output
 
@@ -67,14 +70,31 @@ class CataProWrapper(BaseModel):
         if invalid_smiles_indices:
             LOGGER.warning("Catapro skipped rows with invalid SMILES indices: %s", invalid_smiles_indices)
         if not clean_data["valid_indices"]:
+            progress_completed(LOGGER, "catapro.validation", "Catapro validation completed valid_rows=0.")
             LOGGER.warning("Catapro found no rows after SMILES validation.")
             return output
+
+        progress_completed(
+            LOGGER,
+            "catapro.validation",
+            "Catapro validation completed valid_rows=%s.",
+            len(clean_data["valid_indices"]),
+        )
+        progress_started(
+            LOGGER,
+            "catapro.features",
+            "Catapro feature generation started valid_rows=%s.",
+            len(clean_data["valid_indices"]),
+        )
 
         try:
             dataloader = self._get_datasets(clean_data, ProtT5_model, MolT5_model, batch_size=batch_size)
         except Exception:
             LOGGER.exception("Catapro feature generation failed; returning NA predictions.")
             return output
+
+        progress_completed(LOGGER, "catapro.features", "Catapro feature generation completed.")
+        progress_started(LOGGER, "catapro.inference", "Catapro ensemble inference started folds=%s.", NUM_FOLDS)
 
         pred_kcat_list = []
         failed_folds = []
@@ -104,6 +124,15 @@ class CataProWrapper(BaseModel):
 
         if failed_folds:
             LOGGER.warning("Catapro failed folds: %s", failed_folds)
+
+        progress_completed(
+            LOGGER,
+            "catapro.inference",
+            "Catapro ensemble inference completed successful_folds=%s failed_folds=%s.",
+            len(pred_kcat_list),
+            len(failed_folds),
+        )
+
         if len(pred_kcat_list) < MIN_SUCCESSFUL_FOLDS:
             LOGGER.warning(
                 "Catapro produced fewer than %s successful folds (%s). Returning NA predictions.",
@@ -116,6 +145,12 @@ class CataProWrapper(BaseModel):
         pred_kcat_linear = np.power(10, pred_kcat).reshape(-1)
 
         output.loc[clean_data["valid_indices"], 'catapro_kcat'] = pred_kcat_linear
+        progress_completed(
+            LOGGER,
+            "catapro.predict",
+            "Catapro predictions assigned rows=%s.",
+            len(clean_data["valid_indices"]),
+        )
 
         return output
 

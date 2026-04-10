@@ -180,7 +180,7 @@ def run_models(
 		error_message = ""
 
 		try:
-			model = Model(model_id)
+			model = Model(model_id, logger=logger)
 			current_df = model.predict(current_df)
 			elapsed_seconds = (datetime.now() - model_start).total_seconds()
 			successful_models.append(model_id)

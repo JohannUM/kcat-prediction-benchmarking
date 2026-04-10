@@ -1,6 +1,8 @@
 import sys
+import logging
 
 from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, ensure_data_subfolder
+from kcatbench.model_wrapper.wrapper_progress import progress_completed, progress_started
 
 DLKCAT_CODE_DIR = (MODELS_DIR / "DLKcat" / "DeeplearningApproach")
 DLKCAT_DATA_DIR = (DATA_DIR / "DLKcat") 
@@ -19,6 +21,9 @@ import requests
 import math
 from rdkit import Chem
 from collections import defaultdict
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class DLKcatWrapper(BaseModel):
@@ -47,6 +52,7 @@ class DLKcatWrapper(BaseModel):
 
     def predict(self, input_data: pd.DataFrame) -> pd.DataFrame:
         # Based on the predicition_for_input script from DLKcat
+        progress_started(LOGGER, "dlkcat.predict", "DLKcat prediction started rows=%s.", len(input_data.index))
 
         n_fingerprint = len(self.fingerprint_dict)
         n_word = len(self.word_dict)
@@ -65,10 +71,24 @@ class DLKcatWrapper(BaseModel):
         Kcat_model = model.KcatPrediction(device, n_fingerprint, n_word, 2*dim, layer_gnn, window, layer_cnn, layer_output).to(device)
         Kcat_model.load_state_dict(torch.load(str(DLKCAT_CODE_DIR / "Results" / "output" / "all--radius2--ngram3--dim20--layer_gnn3--window11--layer_cnn3--layer_output3--lr1e-3--lr_decay0.5--decay_interval10--weight_decay1e-6--iteration50"), map_location=device))
         predictor = Predictor(Kcat_model)
+        progress_completed(LOGGER, "dlkcat.model", "DLKcat model initialization completed.")
 
+        progress_started(LOGGER, "dlkcat.validation", "DLKcat input validation started.")
         clean_data = self._prepare_data(input_data)
+        progress_completed(
+            LOGGER,
+            "dlkcat.validation",
+            "DLKcat input validation completed valid_rows=%s.",
+            len(clean_data["valid_indices"]),
+        )
 
         results = []
+        progress_started(
+            LOGGER,
+            "dlkcat.inference",
+            "DLKcat inference started valid_rows=%s.",
+            len(clean_data["valid_indices"]),
+        )
 
         for id, idx in enumerate(clean_data["valid_indices"]):
             
@@ -99,14 +119,27 @@ class DLKcatWrapper(BaseModel):
                 kcat_value = '%.4f' %math.pow(2, kcat_log_value)
 
                 results.append(kcat_value)
-            except:
-                print("EXCEPTION")
+            except Exception:
+                LOGGER.exception("DLKcat failed for row index %s.", idx)
                 results.append(pd.NA)
                 continue
+
+        progress_completed(
+            LOGGER,
+            "dlkcat.inference",
+            "DLKcat inference completed attempted_rows=%s.",
+            len(clean_data["valid_indices"]),
+        )
         
         output = input_data.copy()
         output['dlkcat_kcat'] = pd.NA
         output.loc[clean_data["valid_indices"], 'dlkcat_kcat'] = results
+        progress_completed(
+            LOGGER,
+            "dlkcat.predict",
+            "DLKcat predictions assigned rows=%s.",
+            len(results),
+        )
 
         return output
     

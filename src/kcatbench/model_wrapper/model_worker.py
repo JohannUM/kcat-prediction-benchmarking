@@ -1,4 +1,5 @@
 import argparse
+import logging
 import sys
 import traceback
 import pandas as pd
@@ -7,6 +8,38 @@ from collections.abc import Callable
 from typing import Optional
 
 from kcatbench.util import read_csv_with_schema
+from kcatbench.model_wrapper.subprocess_logging import encode_worker_log_record
+from kcatbench.model_wrapper.wrapper_progress import progress_completed, progress_started
+
+
+WORKER_LOGGER = logging.getLogger(__name__)
+_LOGGING_CONFIGURED = False
+
+
+class _WorkerTransportHandler(logging.Handler):
+    """Emits parseable worker log lines to stderr for parent-process forwarding."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = encode_worker_log_record(record)
+            print(line, file=sys.stderr, flush=True)
+        except Exception:
+            self.handleError(record)
+
+
+def _configure_worker_logging() -> None:
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+
+    kcatbench_logger = logging.getLogger("kcatbench")
+    kcatbench_logger.setLevel(logging.DEBUG)
+    kcatbench_logger.propagate = False
+    kcatbench_logger.handlers.clear()
+    kcatbench_logger.addHandler(_WorkerTransportHandler())
+
+    _LOGGING_CONFIGURED = True
+
 
 def _predict_dlkcat(input:pd.DataFrame) -> pd.DataFrame:
     from kcatbench.model_wrapper.inner_wrapper.dlkcat_wrapper import DLKcatWrapper
@@ -42,17 +75,42 @@ PREDICT_HANDLERS: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
 }
 
 def run_predict(model:str, input_path:Path, output_path:Path):
+    _configure_worker_logging()
+
     if model not in PREDICT_HANDLERS:
         raise ValueError(f"Unknown model '{model}'.")
-    
+
+    progress_started(WORKER_LOGGER, "worker", "Worker started for model '%s'.", model)
+
     try:
         input = read_csv_with_schema(input_path)
+        progress_completed(
+            WORKER_LOGGER,
+            "worker.input",
+            "Loaded worker input rows=%s columns=%s.",
+            len(input.index),
+            len(input.columns),
+        )
 
+        progress_started(WORKER_LOGGER, "worker.predict", "Running model '%s' predict call.", model)
         output = PREDICT_HANDLERS[model](input)
+        progress_completed(
+            WORKER_LOGGER,
+            "worker.predict",
+            "Model '%s' predict call completed.",
+            model,
+        )
 
         output.to_csv(output_path, index=False)
+        progress_completed(
+            WORKER_LOGGER,
+            "worker.output",
+            "Worker output rows=%s written to %s.",
+            len(output.index),
+            output_path,
+        )
 
-    except Exception as e:
+    except Exception:
         print(f"--- WORKER EXCEPTION IN MODEL: {model} ---", file=sys.stderr)
         traceback.print_exc(file=sys.stderr)
         sys.exit(1)

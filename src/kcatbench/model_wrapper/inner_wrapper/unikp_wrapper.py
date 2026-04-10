@@ -2,18 +2,23 @@ import sys
 import re
 import gc
 import math
+import logging
 import torch
 import pickle
 import numpy as np
 import pandas as pd
 from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, ensure_data_subfolder, wget_download, work_in_dir
 from kcatbench.model_wrapper.base_model import BaseModel
+from kcatbench.model_wrapper.wrapper_progress import progress_completed, progress_started
 
 UNIKP_CODE_DIR = MODELS_DIR / "UniKP"
 UNIKP_DATA_DIR = DATA_DIR / "UniKP"
 
 if str(UNIKP_CODE_DIR) not in sys.path:
     sys.path.insert(0, str(UNIKP_CODE_DIR))
+
+
+LOGGER = logging.getLogger(__name__)
 
 class UniKPWrapper(BaseModel):
     name = "UniKP"
@@ -39,21 +44,36 @@ class UniKPWrapper(BaseModel):
 
         if not expected_data_link.exists():
             expected_data_link.symlink_to((DATA_DIR / "CataPro" / "prot_t5_xl_uniref50"), target_is_directory=True)
-            print(f"Created symlink: {expected_data_link} -> {(DATA_DIR / 'CataPro' / 'prot_t5_xl_uniref50')}")
+            LOGGER.info(
+                "Created symlink: %s -> %s",
+                expected_data_link,
+                (DATA_DIR / "CataPro" / "prot_t5_xl_uniref50"),
+            )
 
         success_marker.touch()
 
 
     def predict(self, input_data: pd.DataFrame) -> pd.DataFrame:
+        progress_started(LOGGER, "unikp.predict", "UniKP prediction started rows=%s.", len(input_data.index))
 
         output = input_data.copy()
 
+        progress_started(LOGGER, "unikp.validation", "UniKP input validation started.")
         clean_data = self._prepare_data(input_data)
         
         if not clean_data["valid_indices"]:
+            progress_completed(LOGGER, "unikp.validation", "UniKP input validation completed valid_rows=0.")
             output['unikp_kcat'] = pd.NA
             return output
+
+        progress_completed(
+            LOGGER,
+            "unikp.validation",
+            "UniKP input validation completed valid_rows=%s.",
+            len(clean_data["valid_indices"]),
+        )
         
+        progress_started(LOGGER, "unikp.vectorization", "UniKP vectorization started valid_rows=%s.", len(clean_data["valid_indices"]))
         with work_in_dir(UNIKP_CODE_DIR):
             from build_vocab import WordVocab
             from pretrain_trfm import TrfmSeq2seq
@@ -62,6 +82,8 @@ class UniKPWrapper(BaseModel):
             
             smiles_vec = self._smiles_to_vec(clean_data["substrates"], WordVocab, TrfmSeq2seq, split)
             seq_vec = self._seq_to_vec(clean_data["sequence"], T5Tokenizer, T5EncoderModel)
+
+        progress_completed(LOGGER, "unikp.vectorization", "UniKP vectorization completed.")
             
         fused_vector = np.concatenate((smiles_vec, seq_vec), axis=1)
         
@@ -69,11 +91,14 @@ class UniKPWrapper(BaseModel):
         with open(model_path, "rb") as f:
             xgb_model = pickle.load(f)
             
+        progress_started(LOGGER, "unikp.inference", "UniKP model inference started.")
         pre_label = xgb_model.predict(fused_vector)
         pre_label_pow = [math.pow(10, p) for p in pre_label]
+        progress_completed(LOGGER, "unikp.inference", "UniKP model inference completed predicted_rows=%s.", len(pre_label_pow))
         
         output['unikp_kcat'] = pd.NA
         output.loc[clean_data["valid_indices"], 'unikp_kcat'] = pre_label_pow
+        progress_completed(LOGGER, "unikp.predict", "UniKP predictions assigned rows=%s.", len(clean_data["valid_indices"]))
         
         return output
     

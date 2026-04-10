@@ -2,6 +2,7 @@ import os
 import logging
 import subprocess
 from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, extract_tar_gz, wget_download, work_in_dir, ensure_data_subfolder
+from kcatbench.model_wrapper.wrapper_progress import progress_completed, progress_started
 
 CATPRED_CODE_DIR = MODELS_DIR / "CatPred"
 CATPRED_DATA_DIR = DATA_DIR / "CatPred"
@@ -43,18 +44,30 @@ class CatPredWrapper(BaseModel):
             archive_path.unlink()
             success_marker.touch()
         except OSError as e:
-            print(f"Warning: Could not remove archive file: {e}")
+            LOGGER.warning("Could not remove CatPred archive file: %s", e)
 
     def predict(self, input_data: pd.DataFrame):
+        progress_started(LOGGER, "catpred.predict", "CatPred prediction started rows=%s.", len(input_data.index))
+
         output = input_data.copy()
         output['catpred_kcat'] = pd.NA
 
         with work_in_dir(CATPRED_CODE_DIR):
+            progress_started(LOGGER, "catpred.validation", "CatPred input validation started.")
             outfile, clean_data = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR / "data" / "pretrained" / "production" / "kcat"))
             if outfile is None or not clean_data["valid_indices"]:
+                progress_completed(LOGGER, "catpred.validation", "CatPred validation completed valid_rows=0.")
                 LOGGER.warning("CatPred found no valid rows after validation. Returning NA predictions.")
                 return output
 
+            progress_completed(
+                LOGGER,
+                "catpred.validation",
+                "CatPred validation completed valid_rows=%s.",
+                len(clean_data["valid_indices"]),
+            )
+
+            progress_started(LOGGER, "catpred.inference", "CatPred subprocess prediction started.")
             run_result = self._run_prediction_script()
             if run_result.returncode != 0:
                 LOGGER.error(
@@ -65,11 +78,16 @@ class CatPredWrapper(BaseModel):
                 )
                 return output
 
+            progress_completed(LOGGER, "catpred.inference", "CatPred subprocess prediction completed.")
+
+            progress_started(LOGGER, "catpred.parse", "CatPred output parsing started.")
             try:
                 output_catpred = self._get_predictions("kcat", outfile)
             except Exception:
                 LOGGER.exception("CatPred failed to parse prediction output file: %s", outfile)
                 return output
+
+            progress_completed(LOGGER, "catpred.parse", "CatPred output parsing completed rows=%s.", len(output_catpred.index))
 
         prediction_col = 'Prediction_(s^(-1))'
         if prediction_col not in output_catpred.columns:
@@ -92,6 +110,8 @@ class CatPredWrapper(BaseModel):
                 assign_count,
             )
 
+        progress_completed(LOGGER, "catpred.predict", "CatPred predictions assigned rows=%s.", assign_count)
+
         return output
 
     def _empty_clean_data(self):
@@ -103,7 +123,7 @@ class CatPredWrapper(BaseModel):
 
     def _run_prediction_script(self):
         env = os.environ.copy()
-        env["PROTEIN_EMBED_USE_CPU"] = "0"
+        env.pop("PROTEIN_EMBED_USE_CPU", None)
         return subprocess.run(
             ["bash", "./predict.sh"],
             env=env,

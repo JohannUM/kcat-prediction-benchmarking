@@ -14,6 +14,7 @@ import pandas as pd
 import torch
 
 from kcatbench.model_wrapper.base_model import BaseModel
+from kcatbench.model_wrapper.wrapper_progress import progress_completed, progress_started
 from kcatbench.util import (
 	DATA_DIR,
 	DEVICE,
@@ -90,22 +91,41 @@ class MMKcatWrapper(BaseModel):
 		os.environ.setdefault("TORCH_HOME", str(MMKCAT_TORCH_CACHE_DIR))
 
 	def predict(self, input_data: pd.DataFrame) -> pd.DataFrame:
+		progress_started(LOGGER, "mmkcat.predict", "MMKcat prediction started rows=%s.", len(input_data.index))
+
 		output = input_data.copy()
 		output["mmkcat_kcat"] = pd.NA
 
+		progress_started(LOGGER, "mmkcat.validation", "MMKcat input validation started.")
 		clean_data = self._prepare_data(
 			input_data,
 			products_required=False,
 			multiple_smiles=True,
 		)
 		if not clean_data["valid_indices"]:
+			progress_completed(LOGGER, "mmkcat.validation", "MMKcat input validation completed valid_rows=0.")
 			LOGGER.warning("MMKcat found no valid rows after preprocessing.")
 			return output
 
+		progress_completed(
+			LOGGER,
+			"mmkcat.validation",
+			"MMKcat input validation completed valid_rows=%s.",
+			len(clean_data["valid_indices"]),
+		)
+
+		progress_started(LOGGER, "mmkcat.runtime", "MMKcat runtime initialization started.")
 		self._ensure_models_loaded()
+		progress_completed(LOGGER, "mmkcat.runtime", "MMKcat runtime initialization completed.")
 
 		predictions: list[Any] = []
 		success_count = 0
+		progress_started(
+			LOGGER,
+			"mmkcat.inference",
+			"MMKcat inference started valid_rows=%s.",
+			len(clean_data["valid_indices"]),
+		)
 
 		for pos, row_index in enumerate(clean_data["valid_indices"]):
 			sequence = clean_data["sequence"][pos]
@@ -131,8 +151,22 @@ class MMKcatWrapper(BaseModel):
 			success_count,
 			len(clean_data["valid_indices"]) - success_count,
 		)
+		progress_completed(
+			LOGGER,
+			"mmkcat.inference",
+			"MMKcat inference completed success=%s failed=%s.",
+			success_count,
+			len(clean_data["valid_indices"]) - success_count,
+		)
 
 		self._cleanup_gpu()
+		progress_completed(LOGGER, "mmkcat.cleanup", "MMKcat cleanup completed.")
+		progress_completed(
+			LOGGER,
+			"mmkcat.predict",
+			"MMKcat predictions assigned rows=%s.",
+			len(clean_data["valid_indices"]),
+		)
 		return output
 
 	def _predict_single_log10(

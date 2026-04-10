@@ -4,6 +4,7 @@ import logging
 import pandas as pd
 from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, ensure_data_subfolder, force_torch_load_device, wget_download, work_in_dir
 from kcatbench.model_wrapper.base_model import BaseModel
+from kcatbench.model_wrapper.wrapper_progress import progress_completed, progress_started
 
 TURNUP_CODE_DIR = MODELS_DIR / "TurNuP"
 TURNUP_DATA_DIR = DATA_DIR / "TurNuP"
@@ -42,15 +43,16 @@ class TurNuPWrapper(BaseModel):
 
         if not expected_data_link.exists():
             expected_data_link.symlink_to((TURNUP_DATA_DIR / "data"), target_is_directory=True)
-            print(f"Created symlink: {expected_data_link} -> {(TURNUP_DATA_DIR / 'data')}")
+            LOGGER.info("Created symlink: %s -> %s", expected_data_link, (TURNUP_DATA_DIR / "data"))
         
         try:
             archive_path.unlink()
             success_marker.touch()
         except OSError as e:
-            print(f"Warning: Could not remove archive file: {e}")
+            LOGGER.warning("Could not remove TurNuP archive file: %s", e)
 
     def predict(self, input_data: pd.DataFrame) -> pd.DataFrame:
+        progress_started(LOGGER, "turnup.predict", "TurNuP prediction started rows=%s.", len(input_data.index))
         
         output = input_data.copy()
         output['turnup_kcat'] = pd.NA
@@ -60,16 +62,32 @@ class TurNuPWrapper(BaseModel):
         with work_in_dir(target_cwd), force_torch_load_device(DEVICE):
             from kcat_prediction import kcat_predicton
 
+            progress_started(LOGGER, "turnup.validation", "TurNuP input validation started.")
             clean_data = self._prepare_data(input_data, products_required=True, multiple_smiles=True)
             if not clean_data["valid_indices"]:
+                progress_completed(LOGGER, "turnup.validation", "TurNuP input validation completed valid_rows=0.")
                 LOGGER.warning("TurNuP found no valid rows after preprocessing.")
                 return output
 
+            progress_completed(
+                LOGGER,
+                "turnup.validation",
+                "TurNuP input validation completed valid_rows=%s.",
+                len(clean_data["valid_indices"]),
+            )
+
             substrates, products, enzymes, valid_indices = self._prepare_turnup_input(clean_data)
+            progress_started(
+                LOGGER,
+                "turnup.inference",
+                "TurNuP inference started valid_rows=%s.",
+                len(valid_indices),
+            )
             
             result = kcat_predicton(substrates=substrates, products=products, enzymes=enzymes)
 
             predictions = result["kcat [s^(-1)]"].to_list()
+            progress_completed(LOGGER, "turnup.inference", "TurNuP inference completed predicted_rows=%s.", len(predictions))
 
             assign_count = min(len(valid_indices), len(predictions))
             output.loc[valid_indices[:assign_count], 'turnup_kcat'] = predictions[:assign_count]
@@ -80,6 +98,8 @@ class TurNuPWrapper(BaseModel):
                     len(predictions),
                     assign_count,
                 )
+
+            progress_completed(LOGGER, "turnup.predict", "TurNuP predictions assigned rows=%s.", assign_count)
 
         return output
         
