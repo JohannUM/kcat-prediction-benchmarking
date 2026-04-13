@@ -2,7 +2,9 @@ import os
 import subprocess
 import json
 import ast
+import shutil
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from contextlib import contextmanager
 from typing import Union
 
@@ -136,6 +138,88 @@ def extract_tar_gz(archive_path, extract_to_dir):
         return {"success": True, "message": "Extraction completed successfully."}
     except subprocess.CalledProcessError as e:
         return {"success": False, "message": f"Extraction failed: {e}"}
+
+
+def gdrive_download_file_from_folder(folder_url, expected_filename, output_path, quiet=True):
+    """
+    Download a specific file from a public Google Drive folder URL.
+
+    Returns a dict with the same shape as other utility helpers:
+    {"success": bool, "message": str}
+    """
+    try:
+        import gdown
+    except ImportError:
+        return {
+            "success": False,
+            "message": (
+                "Missing dependency 'gdown'. Install it in the active environment "
+                "to enable Google Drive checkpoint download."
+            ),
+        }
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with TemporaryDirectory(prefix="kcatbench_gdrive_") as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        try:
+            downloaded_files = gdown.download_folder(
+                url=folder_url,
+                output=str(tmp_root),
+                quiet=quiet,
+                remaining_ok=True,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "message": f"Google Drive folder download failed: {exc}",
+            }
+
+        if not downloaded_files:
+            return {
+                "success": False,
+                "message": "Google Drive folder download returned no files.",
+            }
+
+        candidates = [
+            Path(file_path)
+            for file_path in downloaded_files
+            if Path(file_path).name == expected_filename
+        ]
+        if not candidates:
+            candidates = list(tmp_root.rglob(expected_filename))
+
+        if not candidates:
+            return {
+                "success": False,
+                "message": (
+                    f"Expected file '{expected_filename}' was not found in downloaded "
+                    "Google Drive folder contents."
+                ),
+            }
+
+        source_path = candidates[0]
+        if not source_path.exists() or source_path.stat().st_size == 0:
+            return {
+                "success": False,
+                "message": (
+                    f"Downloaded file '{source_path}' is missing or empty."
+                ),
+            }
+
+        try:
+            shutil.move(str(source_path), str(output_path))
+        except OSError as exc:
+            return {
+                "success": False,
+                "message": f"Failed moving downloaded checkpoint to destination: {exc}",
+            }
+
+    return {
+        "success": True,
+        "message": f"Downloaded '{expected_filename}' to '{output_path}'.",
+    }
     
 
 @contextmanager

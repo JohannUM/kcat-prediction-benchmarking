@@ -21,6 +21,7 @@ from kcatbench.util import (
 	MODELS_DIR,
 	ensure_data_subfolder,
 	force_torch_load_device,
+	gdrive_download_file_from_folder,
 	work_in_dir,
 )
 
@@ -30,12 +31,13 @@ LOGGER = logging.getLogger(__name__)
 MMKCAT_CODE_DIR = MODELS_DIR / "MMKcat"
 MMKCAT_MODEL_DIR = MMKCAT_CODE_DIR / "model"
 MMKCAT_UTIL_DIR = MMKCAT_CODE_DIR / "util"
-MMKCAT_CKPT_DIR = MMKCAT_CODE_DIR / "ckpt"
 MMKCAT_DATA_DIR = DATA_DIR / "MMKcat"
 MMKCAT_TORCH_CACHE_DIR = MMKCAT_DATA_DIR / "torch_cache"
 MMKCAT_TMP_DIR = MMKCAT_DATA_DIR / "tmp"
 
-MMKCAT_CHECKPOINT_PATH = MMKCAT_CKPT_DIR / "concat_best_checkpoint.pth"
+MMKCAT_CHECKPOINT_FILENAME = "concat_best_checkpoint.pth"
+MMKCAT_CHECKPOINT_FOLDER_URL = "https://drive.google.com/drive/folders/1sVg9gfi_wQxZwbnylLrpmek15_aEbNs8?usp=drive_link"
+MMKCAT_CHECKPOINT_PATH = MMKCAT_DATA_DIR / MMKCAT_CHECKPOINT_FILENAME
 MMKCAT_MEAN_ATTR_PATH = MMKCAT_UTIL_DIR / "mean_attr.pt"
 
 PRIMARY_MASK = np.array([True, True, True, True])
@@ -64,6 +66,26 @@ class MMKcatWrapper(BaseModel):
 		ensure_data_subfolder(MMKCAT_DATA_DIR)
 		MMKCAT_TORCH_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 		MMKCAT_TMP_DIR.mkdir(parents=True, exist_ok=True)
+
+		if MMKCAT_CHECKPOINT_PATH.exists() and MMKCAT_CHECKPOINT_PATH.stat().st_size == 0:
+			LOGGER.warning("MMKcat checkpoint is empty at %s. Removing and re-downloading.", MMKCAT_CHECKPOINT_PATH)
+			MMKCAT_CHECKPOINT_PATH.unlink(missing_ok=True)
+
+		if not MMKCAT_CHECKPOINT_PATH.exists():
+			LOGGER.info("MMKcat checkpoint not found at %s. Downloading from Google Drive.", MMKCAT_CHECKPOINT_PATH)
+			result = gdrive_download_file_from_folder(
+				folder_url=MMKCAT_CHECKPOINT_FOLDER_URL,
+				expected_filename=MMKCAT_CHECKPOINT_FILENAME,
+				output_path=MMKCAT_CHECKPOINT_PATH,
+			)
+			if not result["success"]:
+				raise RuntimeError(
+					"MMKcat checkpoint download failed. "
+					+ result["message"]
+					+ f" Manually download '{MMKCAT_CHECKPOINT_FILENAME}' from "
+					+ f"{MMKCAT_CHECKPOINT_FOLDER_URL} and place it at {MMKCAT_CHECKPOINT_PATH}."
+				)
+			LOGGER.info("MMKcat checkpoint downloaded successfully to %s.", MMKCAT_CHECKPOINT_PATH)
 
 		missing_paths = [
 			str(path)
@@ -261,6 +283,17 @@ class MMKcatWrapper(BaseModel):
 		try:
 			with self._mmkcat_runtime_context(), force_torch_load_device(str(self._device)):
 				esm_module = importlib.import_module("esm")
+
+				build_vocab_module = importlib.import_module("build_vocab")
+				word_vocab_cls = getattr(build_vocab_module, "WordVocab")
+
+				import __main__
+				setattr(__main__, "WordVocab", word_vocab_cls)
+
+				worker_module = sys.modules.get("kcatbench.model_wrapper.model_worker")
+				if worker_module is not None:
+					setattr(worker_module, "WordVocab", word_vocab_cls)
+					
 				model_module = importlib.import_module("basic_model_mm")
 				graph_module = importlib.import_module("util.generate_graph")
 
@@ -337,7 +370,7 @@ class MMKcatWrapper(BaseModel):
 	@contextmanager
 	def _mmkcat_runtime_context(self) -> Iterator[None]:
 		inserted_paths = []
-		for target_path in (MMKCAT_MODEL_DIR, MMKCAT_CODE_DIR):
+		for target_path in (MMKCAT_UTIL_DIR, MMKCAT_CODE_DIR, MMKCAT_MODEL_DIR):
 			path_str = str(target_path)
 			if path_str not in sys.path:
 				sys.path.insert(0, path_str)

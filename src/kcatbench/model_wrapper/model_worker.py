@@ -66,12 +66,18 @@ def _predict_unikp(input:pd.DataFrame) -> pd.DataFrame:
     model = UniKPWrapper()
     return model.predict(input)
 
+def _predict_mmkcat(input:pd.DataFrame) -> pd.DataFrame:
+    from kcatbench.model_wrapper.inner_wrapper.mmkcat_wrapper import MMKcatWrapper
+    model = MMKcatWrapper()
+    return model.predict(input)
+
 PREDICT_HANDLERS: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "dlkcat": _predict_dlkcat,
     "catapro": _predict_catapro,
     "catpred": _predict_catpred,
     "turnup": _predict_turnup,
-    "unikp": _predict_unikp
+    "unikp": _predict_unikp,
+    "mmkcat": _predict_mmkcat
 }
 
 def run_predict(model:str, input_path:Path, output_path:Path):

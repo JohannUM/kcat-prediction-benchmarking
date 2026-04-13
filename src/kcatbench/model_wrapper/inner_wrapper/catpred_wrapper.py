@@ -57,8 +57,9 @@ class CatPredWrapper(BaseModel):
             outfile, clean_data = self._create_csv_sh("kcat", input_data, str(CATPRED_DATA_DIR / "data" / "pretrained" / "production" / "kcat"))
             if outfile is None or not clean_data["valid_indices"]:
                 progress_completed(LOGGER, "catpred.validation", "CatPred validation completed valid_rows=0.")
-                LOGGER.warning("CatPred found no valid rows after validation. Returning NA predictions.")
-                return output
+                message = "CatPred validation failed: no valid rows after validation."
+                LOGGER.error(message)
+                raise RuntimeError(message)
 
             progress_completed(
                 LOGGER,
@@ -76,30 +77,36 @@ class CatPredWrapper(BaseModel):
                     run_result.stdout,
                     run_result.stderr,
                 )
-                return output
+                raise RuntimeError(
+                    f"CatPred inference failed with exit code {run_result.returncode}."
+                )
 
             progress_completed(LOGGER, "catpred.inference", "CatPred subprocess prediction completed.")
 
             progress_started(LOGGER, "catpred.parse", "CatPred output parsing started.")
             try:
                 output_catpred = self._get_predictions("kcat", outfile)
-            except Exception:
+            except Exception as exc:
                 LOGGER.exception("CatPred failed to parse prediction output file: %s", outfile)
-                return output
+                raise RuntimeError(
+                    f"CatPred parse failed while reading prediction output: {outfile}"
+                ) from exc
 
             progress_completed(LOGGER, "catpred.parse", "CatPred output parsing completed rows=%s.", len(output_catpred.index))
 
         prediction_col = 'Prediction_(s^(-1))'
         if prediction_col not in output_catpred.columns:
-            LOGGER.error("CatPred output is missing expected column: %s", prediction_col)
-            return output
+            message = f"CatPred output is missing expected column: {prediction_col}"
+            LOGGER.error(message)
+            raise RuntimeError(message)
 
         predictions = output_catpred[prediction_col].tolist()
         target_indices = clean_data["valid_indices"]
         assign_count = min(len(target_indices), len(predictions))
         if assign_count == 0:
-            LOGGER.warning("CatPred produced no assignable predictions after filtering.")
-            return output
+            message = "CatPred assignment failed: no assignable predictions after filtering."
+            LOGGER.error(message)
+            raise RuntimeError(message)
 
         output.loc[target_indices[:assign_count], 'catpred_kcat'] = predictions[:assign_count]
         if assign_count != len(target_indices) or len(predictions) != len(target_indices):
@@ -109,6 +116,12 @@ class CatPredWrapper(BaseModel):
                 len(predictions),
                 assign_count,
             )
+
+        assigned_non_null = int(output.loc[target_indices[:assign_count], 'catpred_kcat'].notna().sum())
+        if assigned_non_null == 0:
+            message = "CatPred assignment failed: assigned predictions are all NA/NaN."
+            LOGGER.error(message)
+            raise RuntimeError(message)
 
         progress_completed(LOGGER, "catpred.predict", "CatPred predictions assigned rows=%s.", assign_count)
 
@@ -124,6 +137,7 @@ class CatPredWrapper(BaseModel):
     def _run_prediction_script(self):
         env = os.environ.copy()
         env.pop("PROTEIN_EMBED_USE_CPU", None)
+        env.setdefault("CATPRED_CACHE_PATH", "/mnt/burning_scratch/jlotter/.cache.esm2_embeddings")
         return subprocess.run(
             ["bash", "./predict.sh"],
             env=env,

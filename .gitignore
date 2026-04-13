@@ -27,6 +27,9 @@ data/TurNuP/*
 data/UniKP/*
 !data/UniKP/.gitkeep
 
+data/MMKcat/*
+!data/MMKcat/.gitkeep
+
 data/brenda/*
 !data/brenda/.gitkeep
 

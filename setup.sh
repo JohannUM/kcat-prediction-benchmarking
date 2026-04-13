@@ -40,6 +40,7 @@ ENV_NAMES=(
   "catpred_env"
   "turnup_env"
   "unikp_env"
+  "mmkcat_env"
 )
 
 ENV_FILES=(
@@ -49,6 +50,7 @@ ENV_FILES=(
   "${ROOT_DIR}/environments/catpred_environment.yml"
   "${ROOT_DIR}/environments/turnup_environment.yml"
   "${ROOT_DIR}/environments/unikp_environment.yml"
+  "${ROOT_DIR}/environments/mmkcat_environment.yml"
 )
 
 if [ "${#ENV_NAMES[@]}" -ne "${#ENV_FILES[@]}" ]; then
@@ -77,6 +79,13 @@ for i in "${!ENV_FILES[@]}"; do
       else
           echo "Warning: models/CatPred directory not found. Skipping submodule install."
       fi
+      ;;
+    "mmkcat_env")
+      echo "==> [MMKcat] Installing pip GitHub packages with no build isolation/cache..."
+
+      conda run -n "${env_name}" python -m pip install --no-build-isolation --no-cache-dir "fair-esm[esmfold]"
+      conda run -n "${env_name}" python -m pip install --no-build-isolation --no-cache-dir "dllogger @ git+https://github.com/NVIDIA/dllogger.git"
+      conda run -n "${env_name}" python -m pip install --no-build-isolation --no-cache-dir "openfold @ git+https://github.com/aqlaboratory/openfold.git@4b41059694619831a7db195b7e0988fc4ff3a307"
       ;;
 
     *)

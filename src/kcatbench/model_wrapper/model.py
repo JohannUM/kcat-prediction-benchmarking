@@ -22,7 +22,8 @@ ENVIRONMENT_NAMES: dict[str, str] = {
     "catapro": "catapro_env",
     "catpred": "catpred_env",
     "turnup": "turnup_env",
-    "unikp": "unikp_env"
+    "unikp": "unikp_env",
+    "mmkcat": "mmkcat_env"
 }
 
 class Model(BaseModel):
@@ -32,6 +33,8 @@ class Model(BaseModel):
         progress_event_prefix: str = "progress."
 
         def should_forward(self, event: WorkerLogEvent) -> bool:
+            if event.levelno >= logging.WARNING:
+                return True
             if not event.live:
                 return False
             if not event.event:
@@ -155,6 +158,20 @@ class Model(BaseModel):
             "\n".join(lines),
         )
 
+    def _format_subprocess_failure_message(
+        self,
+        returncode: int,
+        stdout_lines: list[str],
+        stderr_lines: list[str],
+    ) -> str:
+        stdout_text = "\n".join(stdout_lines) if stdout_lines else "(empty)"
+        stderr_text = "\n".join(stderr_lines) if stderr_lines else "(empty)"
+        return (
+            f"Model {self.model_name} failed with exit code {returncode}:"
+            f"\nOUTPUT:\n{stdout_text}"
+            f"\n\nERROR:\n{stderr_text}"
+        )
+
     def _get_isolated_env(self) -> dict[str, str]:
         """Creates a clean environment dictionary for the subprocess."""
         env = os.environ.copy()
@@ -190,10 +207,11 @@ class Model(BaseModel):
                 self._log_subprocess_dump("stdout", capture.stdout_lines)
                 self._log_subprocess_dump("stderr", capture.stderr_lines)
 
-                raise RuntimeError(
-                    f"Model {self.model_name} failed with exit code {capture.returncode}:"
-                    f"\nOUTPUT:\n{'\n'.join(capture.stdout_lines)}"
-                    f"\n\nERROR:\n{'\n'.join(capture.stderr_lines)}"
+                error_message = self._format_subprocess_failure_message(
+                    capture.returncode,
+                    capture.stdout_lines,
+                    capture.stderr_lines,
                 )
+                raise RuntimeError(error_message)
 
             return read_csv_with_schema(output_path)
