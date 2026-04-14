@@ -160,7 +160,8 @@ def plot_model_comparison(
         r, _ = pearsonr(plot_x, plot_y)
         rmse = np.sqrt(mean_squared_error(plot_x, plot_y))
         stats_text = (f"Pearson $r = {r:.2f}$\n"
-                      f"$N = {len(plot_data)}$")
+                      f"$N = {len(plot_data)}$\n"
+                      f"RMSE = {rmse:.2f}")
         
         pad_factor = 2.0
         safe_min = data_min if data_min > 1e-10 else 1e-4

@@ -14,6 +14,7 @@ from rdkit import Chem
 
 
 LOGGER = logging.getLogger(__name__)
+ORIG_IDX_COL = "_orig_idx"
 
 class CatPredWrapper(BaseModel):
     name = "CatPred"
@@ -100,24 +101,79 @@ class CatPredWrapper(BaseModel):
             LOGGER.error(message)
             raise RuntimeError(message)
 
-        predictions = output_catpred[prediction_col].tolist()
         target_indices = clean_data["valid_indices"]
-        assign_count = min(len(target_indices), len(predictions))
+        mapped_indices = []
+        assign_count = 0
+
+        if ORIG_IDX_COL in output_catpred.columns:
+            missing_id_count = 0
+            out_of_range_count = 0
+
+            for raw_idx, prediction in output_catpred[[ORIG_IDX_COL, prediction_col]].itertuples(index=False, name=None):
+                if pd.isna(raw_idx):
+                    missing_id_count += 1
+                    continue
+
+                matched_index = None
+                if raw_idx in output.index:
+                    matched_index = raw_idx
+                else:
+                    try:
+                        converted_idx = int(raw_idx)
+                    except (TypeError, ValueError):
+                        converted_idx = None
+
+                    if converted_idx is not None and converted_idx in output.index:
+                        matched_index = converted_idx
+
+                if matched_index is None:
+                    out_of_range_count += 1
+                    continue
+
+                output.at[matched_index, 'catpred_kcat'] = prediction
+                mapped_indices.append(matched_index)
+
+            assign_count = len(mapped_indices)
+            if (
+                assign_count != len(target_indices)
+                or len(output_catpred.index) != len(target_indices)
+                or missing_id_count > 0
+                or out_of_range_count > 0
+            ):
+                LOGGER.warning(
+                    "CatPred prediction mapping mismatch: expected_valid=%s output_rows=%s mapped=%s missing_ids=%s out_of_range_ids=%s",
+                    len(target_indices),
+                    len(output_catpred.index),
+                    assign_count,
+                    missing_id_count,
+                    out_of_range_count,
+                )
+        else:
+            LOGGER.warning(
+                "CatPred output missing '%s'; using positional fallback assignment. This may misalign rows when CatPred drops entries.",
+                ORIG_IDX_COL,
+            )
+            predictions = output_catpred[prediction_col].tolist()
+            assign_count = min(len(target_indices), len(predictions))
+            if assign_count > 0:
+                fallback_indices = target_indices[:assign_count]
+                output.loc[fallback_indices, 'catpred_kcat'] = predictions[:assign_count]
+                mapped_indices = fallback_indices
+
+            if assign_count != len(target_indices) or len(predictions) != len(target_indices):
+                LOGGER.warning(
+                    "CatPred prediction count mismatch (fallback mode): expected=%s predicted=%s assigned=%s",
+                    len(target_indices),
+                    len(predictions),
+                    assign_count,
+                )
+
         if assign_count == 0:
             message = "CatPred assignment failed: no assignable predictions after filtering."
             LOGGER.error(message)
             raise RuntimeError(message)
 
-        output.loc[target_indices[:assign_count], 'catpred_kcat'] = predictions[:assign_count]
-        if assign_count != len(target_indices) or len(predictions) != len(target_indices):
-            LOGGER.warning(
-                "CatPred prediction count mismatch: expected=%s predicted=%s assigned=%s",
-                len(target_indices),
-                len(predictions),
-                assign_count,
-            )
-
-        assigned_non_null = int(output.loc[target_indices[:assign_count], 'catpred_kcat'].notna().sum())
+        assigned_non_null = int(output.loc[mapped_indices, 'catpred_kcat'].notna().sum()) if mapped_indices else 0
         if assigned_non_null == 0:
             message = "CatPred assignment failed: assigned predictions are all NA/NaN."
             LOGGER.error(message)
@@ -137,6 +193,7 @@ class CatPredWrapper(BaseModel):
     def _run_prediction_script(self):
         env = os.environ.copy()
         env.pop("PROTEIN_EMBED_USE_CPU", None)
+        env["CLEAR_CACHE"] = "1"
         env.setdefault("CATPRED_CACHE_PATH", "/mnt/burning_scratch/jlotter/.cache.esm2_embeddings")
         return subprocess.run(
             ["bash", "./predict.sh"],
@@ -210,6 +267,7 @@ class CatPredWrapper(BaseModel):
         df['SMILES'] = smiles_list_new
         df['sequence'] = sequence_list_new
         df['pdbpath'] = [f"sequence_{i}" for i in range(len(df))]
+        df[ORIG_IDX_COL] = filtered_clean_data["valid_indices"]
         df.to_csv(input_file_new_path, index=False)
 
         gpu_id = DEVICE.split(":")[1] if ":" in DEVICE else "0"
