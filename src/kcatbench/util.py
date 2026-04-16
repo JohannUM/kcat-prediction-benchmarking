@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from contextlib import contextmanager
-from typing import Union
+from typing import Optional, Union
 
 import pandas as pd
 
@@ -38,6 +38,19 @@ DATA_DIR   = _resolve_path("data_dir", "data")
 RESULT_DIR = _resolve_path("results_dir", "results")
 
 DEVICE = _config.get("device", "cuda:0")
+
+
+def _resolve_optional_device(config_key: str) -> Optional[str]:
+    value = _config.get(config_key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    clean_value = value.strip()
+    return clean_value if clean_value else None
+
+
+SECOND_DEVICE = _resolve_optional_device("second_device")
 
 
 def _parse_list_str_cell(value) -> list[str]:

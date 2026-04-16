@@ -26,7 +26,6 @@ def _standardize_smiles(value: object) -> str:
             return original
 
         mol = rdMolStandardize.Cleanup(mol)
-        # mol = rdMolStandardize.FragmentParent(mol)
         mol = rdMolStandardize.Uncharger().uncharge(mol)
         mol = rdMolStandardize.TautomerEnumerator().Canonicalize(mol)
         return Chem.MolToSmiles(mol, canonical=True, isomericSmiles=True)
@@ -118,7 +117,7 @@ def ee_process_db(path: Path = (DATA_DIR / "enzyextract")):
     df = df[mutant_mask].copy()
     df = df.reset_index(drop=True)
 
-    df = df.rename(columns={"smiles": "substrates"})
+    df = df.rename(columns={"smiles": "substrates", "kcat_value": "experimental_kcat"})
     df["substrates"] = df["substrates"].apply(_standardize_smiles)
     df["substrates"] = df["substrates"].apply(_to_singleton_list)
 
@@ -136,4 +135,4 @@ def ee_process_db(path: Path = (DATA_DIR / "enzyextract")):
 
 def ee_build_db():
     ee_download_db()
-    return ee_process_db(path=DATA_DIR / "enzyextract")
+    return ee_process_db()

@@ -19,6 +19,7 @@ from kcatbench.util import (
 	DATA_DIR,
 	DEVICE,
 	MODELS_DIR,
+	SECOND_DEVICE,
 	ensure_data_subfolder,
 	force_torch_load_device,
 	gdrive_download_file_from_folder,
@@ -54,6 +55,7 @@ class MMKcatWrapper(BaseModel):
 	def __init__(self) -> None:
 		super().__init__()
 		self._device = self._resolve_torch_device()
+		self._esmfold_device = self._resolve_esmfold_device()
 		self._mmkcat_model = None
 		self._esm2_model = None
 		self._esmfold_model = None
@@ -159,6 +161,7 @@ class MMKcatWrapper(BaseModel):
 					substrate_smiles=substrate_smiles,
 					protein_sequence=sequence,
 					product_smiles=product_smiles,
+					row_index=row_index,
 				)
 				predictions.append(float(10 ** predicted_log10))
 				success_count += 1
@@ -196,6 +199,7 @@ class MMKcatWrapper(BaseModel):
 		substrate_smiles: list[str],
 		protein_sequence: str,
 		product_smiles: list[Optional[str]],
+		row_index: Any = None,
 	) -> float:
 		if not substrate_smiles:
 			raise ValueError("Substrate SMILES are required for MMKcat prediction.")
@@ -203,7 +207,7 @@ class MMKcatWrapper(BaseModel):
 			raise ValueError("Protein sequence is required for MMKcat prediction.")
 
 		protein_sequence_rep = self._get_protein_sequence_rep(protein_sequence)
-		protein_graph = self._get_protein_graph(protein_sequence)
+		protein_graph = self._get_protein_graph(protein_sequence, row_index=row_index)
 
 		data = [
 			[substrate_smiles],
@@ -252,7 +256,7 @@ class MMKcatWrapper(BaseModel):
 		sequence_rep = token_representations[0, 1 : tokens_len - 1].mean(0)
 		return sequence_rep.detach().cpu().unsqueeze(0)
 
-	def _get_protein_graph(self, sequence: str):
+	def _get_protein_graph(self, sequence: str, row_index: Any = None):
 		with torch.no_grad():
 			pdb_output = self._esmfold_model.infer_pdb(sequence)
 
@@ -322,7 +326,7 @@ class MMKcatWrapper(BaseModel):
 
 				if self._esmfold_model is None:
 					esmfold_model = esm_module.pretrained.esmfold_v1()
-					self._esmfold_model = esmfold_model.to(self._device).eval()
+					self._esmfold_model = esmfold_model.to(self._esmfold_device).eval()
 
 				if self._pdb2graph is None:
 					self._pdb2graph = getattr(graph_module, "pdb2graph")
@@ -359,13 +363,61 @@ class MMKcatWrapper(BaseModel):
 			return torch.device("cpu")
 
 		try:
-			return torch.device(requested_device)
+			resolved_device = torch.device(requested_device)
+			if (
+				resolved_device.type == "cuda"
+				and resolved_device.index is not None
+				and resolved_device.index >= torch.cuda.device_count()
+			):
+				LOGGER.warning(
+					"MMKcat requested device '%s' but only %s CUDA device(s) are available. Falling back to cpu.",
+					requested_device,
+					torch.cuda.device_count(),
+				)
+				return torch.device("cpu")
+			return resolved_device
 		except Exception:
 			LOGGER.warning(
 				"MMKcat could not parse device '%s'. Falling back to cpu.",
 				requested_device,
 			)
 			return torch.device("cpu")
+
+	def _resolve_esmfold_device(self) -> torch.device:
+		if SECOND_DEVICE is None:
+			return self._device
+
+		requested_device = str(SECOND_DEVICE)
+		if requested_device.startswith("cuda") and not torch.cuda.is_available():
+			LOGGER.warning(
+				"MMKcat second_device '%s' requested for ESMFold but CUDA is unavailable. Using primary device '%s'.",
+				requested_device,
+				self._device,
+			)
+			return self._device
+
+		try:
+			resolved_device = torch.device(requested_device)
+			if (
+				resolved_device.type == "cuda"
+				and resolved_device.index is not None
+				and resolved_device.index >= torch.cuda.device_count()
+			):
+				LOGGER.warning(
+					"MMKcat second_device '%s' requested for ESMFold but only %s CUDA device(s) are available. Using primary device '%s'.",
+					requested_device,
+					torch.cuda.device_count(),
+					self._device,
+				)
+				return self._device
+			return resolved_device
+		except Exception:
+			LOGGER.warning(
+				"MMKcat could not parse second_device '%s'. Using primary device '%s' for ESMFold.",
+				requested_device,
+				self._device,
+			)
+			return self._device
 
 	@contextmanager
 	def _mmkcat_runtime_context(self) -> Iterator[None]:
