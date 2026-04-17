@@ -8,13 +8,76 @@ import matplotlib.transforms as transforms
 from matplotlib.patches import Ellipse
 from matplotlib.ticker import FuncFormatter
 from matplotlib.colors import LinearSegmentedColormap
-from sklearn.metrics import mean_squared_error
-from scipy.stats import pearsonr
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+from scipy.stats import pearsonr, spearmanr
 from pathlib import Path
 from upsetplot import from_contents, UpSet
 from kcatbench.util import RESULT_DIR
 
 logger = logging.getLogger(__name__)
+
+
+def _empty_metrics() -> dict[str, float]:
+    """Return a metrics dict initialized with NaN values."""
+    return {
+        'pearson_r': np.nan,
+        'srcc': np.nan,
+        'r2': np.nan,
+        'rmse': np.nan,
+        'mae': np.nan
+    }
+
+
+def _format_metric(value: float) -> str:
+    """Format numeric metrics for plot annotation and handle undefined values."""
+    return f"{value:.2f}" if np.isfinite(value) else "N/A"
+
+
+def _get_ellipse_inlier_mask(x: pd.Series, y: pd.Series, n_std: float = 3.0) -> np.ndarray:
+    """Return a boolean mask for points inside an n-std covariance ellipse."""
+    if len(x) == 0:
+        return np.array([], dtype=bool)
+
+    xy = np.column_stack((np.asarray(x), np.asarray(y)))
+    if xy.shape[0] < 2:
+        return np.zeros(xy.shape[0], dtype=bool)
+
+    cov = np.cov(xy, rowvar=False)
+    if cov.shape != (2, 2) or not np.isfinite(cov).all():
+        logger.warning("Unable to compute stable covariance for ellipse inlier mask.")
+        return np.zeros(xy.shape[0], dtype=bool)
+
+    inv_cov = np.linalg.pinv(cov)
+    centered = xy - np.mean(xy, axis=0)
+    dist_sq = np.einsum('ij,jk,ik->i', centered, inv_cov, centered)
+    return np.isfinite(dist_sq) & (dist_sq <= (n_std ** 2))
+
+
+def _compute_comparison_metrics(
+    x: pd.Series,
+    y: pd.Series,
+    include_ground_truth_metrics: bool = True
+) -> dict[str, float]:
+    """Compute comparison metrics, treating y as ground truth when requested."""
+    metrics = _empty_metrics()
+
+    if len(x) == 0:
+        return metrics
+
+    if include_ground_truth_metrics:
+        if len(x) >= 2:
+            metrics['r2'] = r2_score(y, x)
+        metrics['rmse'] = np.sqrt(mean_squared_error(y, x))
+        metrics['mae'] = mean_absolute_error(y, x)
+
+    if len(x) < 2 or np.isclose(np.std(x), 0.0) or np.isclose(np.std(y), 0.0):
+        logger.warning("Correlation metrics undefined due to low sample count or zero variance.")
+        return metrics
+
+    metrics['pearson_r'], _ = pearsonr(x, y)
+    metrics['srcc'], _ = spearmanr(x, y)
+
+    return metrics
 
 
 def confidence_ellipse(x, y, ax, n_std=3.0, facecolor='none', **kwargs):
@@ -78,14 +141,17 @@ def plot_model_comparison(
     gridsize=50, 
     vmax=None, 
     save=False, 
-    show=True
+    show=True,
+    model_vs_model: bool = False,
+    show_ellipse_stats: bool = False,
+    ellipse_stats_position: str = 'upper_right'
 ):
     """
     Generate a square-aspect hexbin plot comparing two sets of kcat values.
     
     This function cleans input data (extracting scalars from lists/arrays), calculates 
-    agreement statistics (Pearson r, N, RMSE), and visualizes density with a 
-    3-std confidence ellipse and marginal framing ticks.
+    agreement statistics and visualizes density with a 3-std confidence ellipse
+    and marginal framing ticks.
 
     Parameters
     ----------
@@ -110,6 +176,16 @@ def plot_model_comparison(
         If True, saves the figure to the project's results directory.
     show : bool, default True
         If False, does not show the figure.
+    model_vs_model : bool, default False
+        If True, omits ground-truth-dependent metrics (R², RMSE, MAE) from the
+        annotation for model-vs-model comparisons.
+        If False, y-axis values are treated as ground truth.
+    show_ellipse_stats : bool, default False
+        If True, adds an optional secondary panel with metrics computed using
+        only points inside the confidence ellipse.
+    ellipse_stats_position : str, default 'upper_right'
+        Position of the secondary panel. Must be one of: 'upper_right',
+        'upper_left', 'lower_right', 'lower_left'.
 
     Returns
     -------
@@ -118,13 +194,22 @@ def plot_model_comparison(
 
     Notes
     -----
-    - Input data is automatically cleaned: if a cell contains a list, tuple, or 
-      numpy array, the first element is extracted.
-    - Values <= 0 are filtered out when `log_scale` is True.
-    - Red minor ticks on axes indicate the 3rd-standard-deviation boundaries 
-      of the covariance ellipse.
+        - Input data is automatically cleaned: if a cell contains a list, tuple, or
+            numpy array, the first element is extracted.
+        - Values <= 0 are filtered out when `log_scale` is True.
+        - Ground-truth-dependent metrics assume the y-axis (`model_y`) contains
+            experimental values.
+        - The optional ellipse panel is a robustness summary and does not replace
+            full-data metrics.
+        - Red minor ticks on axes indicate the 3rd-standard-deviation boundaries
+            of the covariance ellipse.
     """
-    
+
+    if not model_vs_model and model_x == 'experimental_kcat' and model_y != 'experimental_kcat':
+        logger.info("Swapping axes so experimental_kcat is on the y-axis for metrics.")
+        model_x, model_y = model_y, model_x
+        model_x_name, model_y_name = model_y_name, model_x_name
+
     fig, ax = plt.subplots(figsize=(8, 8))
     sns.set_style("ticks")
 
@@ -150,18 +235,19 @@ def plot_model_comparison(
     x_vals = plot_data[model_x]
     y_vals = plot_data[model_y]
 
+    if not model_vs_model and model_y != 'experimental_kcat':
+        logger.warning(
+            "Ground-truth-dependent metrics assume y-axis is experimental data. "
+            "Received y column '%s'.",
+            model_y
+        )
+
     data_min = min(x_vals.min(), y_vals.min())
     data_max = max(x_vals.max(), y_vals.max())
     
     if log_scale:
         plot_x = np.log10(x_vals)
         plot_y = np.log10(y_vals)
-        
-        r, _ = pearsonr(plot_x, plot_y)
-        rmse = np.sqrt(mean_squared_error(plot_x, plot_y))
-        stats_text = (f"Pearson $r = {r:.2f}$\n"
-                      f"$N = {len(plot_data)}$\n"
-                      f"RMSE = {rmse:.2f}")
         
         pad_factor = 2.0
         safe_min = data_min if data_min > 1e-10 else 1e-4
@@ -170,15 +256,65 @@ def plot_model_comparison(
     else:
         plot_x = x_vals
         plot_y = y_vals
-        r, _ = pearsonr(plot_x, plot_y)
-        rmse = np.sqrt(mean_squared_error(plot_x, plot_y))
-        stats_text = (f"$N = {len(plot_data)}$\n"
-                      f"Pearson $r = {r:.2f}$\n"
-                      f"RMSE = {rmse:.2f}")
                       
         pad = (data_max - data_min) * 0.05
         lower_limit = data_min - pad
         upper_limit = data_max + pad
+
+    n_std = 3.0
+
+    metrics = _compute_comparison_metrics(
+        plot_x,
+        plot_y,
+        include_ground_truth_metrics=not model_vs_model
+    )
+    stats_lines = [
+        f"$N = {len(plot_data)}$",
+        f"Pearson $r = {_format_metric(metrics['pearson_r'])}$",
+        f"SRCC = {_format_metric(metrics['srcc'])}"
+    ]
+    if not model_vs_model:
+        stats_lines.extend([
+            f"$R^2 = {_format_metric(metrics['r2'])}$",
+            f"RMSE = {_format_metric(metrics['rmse'])}",
+            f"MAE = {_format_metric(metrics['mae'])}"
+        ])
+    stats_text = "\n".join(stats_lines)
+
+    ellipse_stats_text = None
+    if show_ellipse_stats:
+        if model_vs_model:
+            logger.info(
+                "Skipping ellipse secondary stats panel because model_vs_model=True."
+            )
+        else:
+            inlier_mask = _get_ellipse_inlier_mask(plot_x, plot_y, n_std=n_std)
+            inside_count = int(np.sum(inlier_mask))
+            total_count = len(plot_x)
+            inside_pct = (inside_count / total_count) * 100 if total_count > 0 else np.nan
+
+            min_inside_points = 5
+            if inside_count < min_inside_points:
+                inside_metrics = _empty_metrics()
+            else:
+                inside_metrics = _compute_comparison_metrics(
+                    plot_x[inlier_mask],
+                    plot_y[inlier_mask],
+                    include_ground_truth_metrics=True
+                )
+
+            ellipse_lines = [
+                "Inside Ellipse",
+                f"$N_{{in}} = {inside_count}$ ({inside_pct:.1f}%)",
+                f"Pearson $r = {_format_metric(inside_metrics['pearson_r'])}$",
+                f"SRCC = {_format_metric(inside_metrics['srcc'])}",
+                f"$R^2 = {_format_metric(inside_metrics['r2'])}$",
+                f"RMSE = {_format_metric(inside_metrics['rmse'])}",
+                f"MAE = {_format_metric(inside_metrics['mae'])}"
+            ]
+            if inside_count < min_inside_points:
+                ellipse_lines.append(f"(metrics require >= {min_inside_points} points)")
+            ellipse_stats_text = "\n".join(ellipse_lines)
 
     hb = ax.hexbin(
         plot_x, 
@@ -191,7 +327,6 @@ def plot_model_comparison(
         vmax=vmax
     )
 
-    n_std = 3.0
     confidence_ellipse(plot_x, plot_y, ax, n_std=n_std, edgecolor='red', linestyle='--', linewidth=1)
     
     cov_matrix = np.cov(plot_x, plot_y)
@@ -217,11 +352,41 @@ def plot_model_comparison(
              linewidth=1.0, 
              label='Perfect Agreement')
 
-    plt.text(0.05, 0.95, stats_text, 
-             transform=plt.gca().transAxes, 
-             fontsize=11, 
-             verticalalignment='top', 
-             bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+    ax.text(
+        0.05,
+        0.95,
+        stats_text,
+        transform=ax.transAxes,
+        fontsize=11,
+        verticalalignment='top',
+        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9)
+    )
+
+    if ellipse_stats_text is not None:
+        panel_positions = {
+            'upper_right': (0.95, 0.95, 'right', 'top'),
+            'upper_left': (0.05, 0.95, 'left', 'top'),
+            'lower_right': (0.95, 0.05, 'right', 'bottom'),
+            'lower_left': (0.05, 0.05, 'left', 'bottom')
+        }
+        if ellipse_stats_position not in panel_positions:
+            logger.warning(
+                "Unknown ellipse_stats_position '%s'. Falling back to 'upper_right'.",
+                ellipse_stats_position
+            )
+            ellipse_stats_position = 'upper_right'
+
+        x_text, y_text, ha, va = panel_positions[ellipse_stats_position]
+        ax.text(
+            x_text,
+            y_text,
+            ellipse_stats_text,
+            transform=ax.transAxes,
+            fontsize=10,
+            horizontalalignment=ha,
+            verticalalignment=va,
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.85)
+        )
 
     if log_scale:
         plt.xlabel(f"{model_x_name} $k_{{cat}}$ ($s^{{-1}}$) [log scale]", fontsize=14)

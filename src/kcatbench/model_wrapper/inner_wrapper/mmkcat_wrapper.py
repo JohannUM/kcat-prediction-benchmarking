@@ -47,6 +47,11 @@ FALLBACK_MASKS = (
 	np.array([True, True, False, True]),
 	np.array([True, True, False, False]),
 )
+GRAPHLESS_MASKS = (
+	np.array([True, True, False, True]),
+	np.array([True, True, False, False]),
+)
+MMKCAT_GRAPH_NODE_FEATURES = 26
 
 
 class MMKcatWrapper(BaseModel):
@@ -207,17 +212,28 @@ class MMKcatWrapper(BaseModel):
 			raise ValueError("Protein sequence is required for MMKcat prediction.")
 
 		protein_sequence_rep = self._get_protein_sequence_rep(protein_sequence)
-		protein_graph = self._get_protein_graph(protein_sequence, row_index=row_index)
+		graphless_fallback = False
+		try:
+			protein_graph = self._get_protein_graph(protein_sequence, row_index=row_index)
+			graph_x, graph_edge_index = protein_graph.x, protein_graph.edge_index
+		except Exception as exc:
+			graphless_fallback = True
+			graph_x, graph_edge_index = self._build_graphless_placeholder_graph()
+			LOGGER.warning(
+				"MMKcat graph generation failed for row index %s. Falling back to graphless prediction. Error: %s",
+				row_index,
+				exc,
+			)
 
 		data = [
 			[substrate_smiles],
 			[protein_sequence_rep],
-			[(protein_graph.x, protein_graph.edge_index)],
+			[(graph_x, graph_edge_index)],
 			[product_smiles],
 			[torch.tensor(0.0)],
 		]
 
-		ordered_masks = (PRIMARY_MASK,) + FALLBACK_MASKS
+		ordered_masks = GRAPHLESS_MASKS if graphless_fallback else ((PRIMARY_MASK,) + FALLBACK_MASKS)
 		last_error = None
 		for mask_idx, mask in enumerate(ordered_masks):
 			try:
@@ -226,7 +242,13 @@ class MMKcatWrapper(BaseModel):
 					result = self._mmkcat_model(data)
 				predicted_x5 = result[-1]
 				value = float(predicted_x5.reshape(-1)[0].item())
-				if mask_idx > 0:
+				if graphless_fallback:
+					LOGGER.warning(
+						"MMKcat row index %s used graphless fallback mask %s.",
+						row_index,
+						mask.tolist(),
+					)
+				elif mask_idx > 0:
 					LOGGER.warning(
 						"MMKcat row used fallback mask %s after primary mask failure.",
 						mask.tolist(),
@@ -235,11 +257,20 @@ class MMKcatWrapper(BaseModel):
 			except Exception as exc:
 				last_error = exc
 				if mask_idx < len(ordered_masks) - 1:
-					LOGGER.warning(
-						"MMKcat mask %s failed; trying next fallback mask.",
-						mask.tolist(),
-					)
+					if graphless_fallback:
+						LOGGER.warning(
+							"MMKcat graphless fallback mask %s failed for row index %s; trying next graphless mask.",
+							mask.tolist(),
+							row_index,
+						)
+					else:
+						LOGGER.warning(
+							"MMKcat mask %s failed; trying next fallback mask.",
+							mask.tolist(),
+						)
 
+		if graphless_fallback:
+			raise RuntimeError("All MMKcat graphless fallback masks failed for current row.") from last_error
 		raise RuntimeError("All MMKcat masks failed for current row.") from last_error
 
 	def _get_protein_sequence_rep(self, sequence: str) -> torch.Tensor:
@@ -273,6 +304,11 @@ class MMKcatWrapper(BaseModel):
 		if graph is None:
 			raise RuntimeError("MMKcat graph generation returned no graph.")
 		return graph
+
+	def _build_graphless_placeholder_graph(self) -> tuple[torch.Tensor, torch.Tensor]:
+		x = torch.zeros((1, MMKCAT_GRAPH_NODE_FEATURES), dtype=torch.float32)
+		edge_index = torch.tensor([[0], [0]], dtype=torch.long)
+		return x, edge_index
 
 	def _ensure_models_loaded(self) -> None:
 		if (
