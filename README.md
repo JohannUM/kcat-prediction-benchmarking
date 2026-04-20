@@ -64,16 +64,6 @@ echo "YOUR_CHEMEO_API_KEY" > .secrets/chemeo_api_key.txt
 
 This file path is gitignored by default so the key is not committed.
 
-### BRENDA Dataset Column Semantics
-When building the BRENDA dataset with `brenda_build_db`, the final output now uses:
-
-- `substrates`: list of resolved SMILES strings (or `null` placeholders when unresolved)
-- `products`: list of resolved SMILES strings (or `null` placeholders when unresolved)
-- `substrates_names`: original substrate name list from BRENDA
-- `products_names`: original product name list from BRENDA
-
-This keeps structure-friendly columns for model input while preserving original compound names for traceability.
-
 ## Usage
 
 You can find usage examples under the `scripts` directory. All scripts must be run in the **kcatbench** conda environment that got automatically created during setup.
@@ -85,6 +75,8 @@ Run multiple models sequentially on one input file:
 ```bash
 python scripts/run_models.py --models unikp dlkcat catapro --input path/to/input.csv
 ```
+
+Valid model identifiers: `dlkcat`, `unikp`, `turnup`, `catpred`, `catapro`, `mmkcat`
 
 Run in the background with nohup:
 
