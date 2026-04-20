@@ -2,7 +2,7 @@ name: kcatbench
 channels:
   - conda-forge
 dependencies:
-  - conda-forge::python=3.14.2
+  - conda-forge::python=3.13.13
   - conda-forge::pandas=2.3.3
   - conda-forge::numpy=2.4.3
   - conda-forge::seaborn=0.13.2
@@ -15,3 +15,7 @@ dependencies:
   - conda-forge::requests=2.33.1
   - conda-forge::pyarrow=23.0.1
   - conda-forge::rdkit=2026.03.1
+  - conda-forge::bioservices=1.15.0
+  - conda-forge::pip
+  - pip:
+      - molecule-resolver==0.5.2

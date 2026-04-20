@@ -2,5 +2,6 @@
     "device": "cuda:0",
     "second_device": "cuda:1",
     "data_dir": "data",
-    "results_dir": "results"
+    "results_dir": "results",
+    "chemeo_api_key_file": ".secrets/chemeo_api_key.txt"
 }

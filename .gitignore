@@ -57,6 +57,7 @@ __pycache__/
 venv/
 .env
 .env.*
+.secrets/chemeo_api_key.txt
 
 # Jupyter checkpoints
 .ipynb_checkpoints/

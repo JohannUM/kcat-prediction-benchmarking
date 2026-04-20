@@ -13,6 +13,7 @@ import pandas as pd
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT_DIR / "config.json"
+_DEFAULT_CHEMEO_API_KEY_FILE = ".secrets/chemeo_api_key.txt"
 
 _config = {}
 if CONFIG_FILE.is_file():
@@ -53,9 +54,52 @@ def _resolve_optional_device(config_key: str) -> Optional[str]:
 SECOND_DEVICE = _resolve_optional_device("second_device")
 
 
+def resolve_chemeo_api_key_file_path() -> Path:
+    """Resolve the configured Chemeo API key file path.
+
+    The path is read from config key "chemeo_api_key_file" and falls back to
+    a repository-local default path.
+    """
+    path_str = _config.get("chemeo_api_key_file", _DEFAULT_CHEMEO_API_KEY_FILE)
+    path = Path(path_str)
+    return path if path.is_absolute() else ROOT_DIR / path
+
+
+def load_chemeo_api_key(required: bool = True) -> Optional[str]:
+    """Load the Chemeo API key from the configured key file."""
+    key_path = resolve_chemeo_api_key_file_path()
+    if not key_path.is_file():
+        if required:
+            raise FileNotFoundError(
+                f"Chemeo API key file not found at: {key_path}. "
+                "Create the file and add your key, or update 'chemeo_api_key_file' in config.json."
+            )
+        return None
+
+    with open(key_path, "r", encoding="utf-8") as handle:
+        key = handle.read().strip()
+
+    if not key:
+        if required:
+            raise ValueError(
+                f"Chemeo API key file is empty at: {key_path}. "
+                "Add your key to the file or update 'chemeo_api_key_file' in config.json."
+            )
+        return None
+
+    return key
+
+
 def _parse_list_str_cell(value) -> list[str]:
+    def _coerce_list_item(item):
+        if item is None:
+            return None
+        if isinstance(item, float) and pd.isna(item):
+            return None
+        return str(item)
+
     if isinstance(value, list):
-        return [str(item) for item in value]
+        return [_coerce_list_item(item) for item in value]
 
     if pd.isna(value):
         return []
@@ -79,7 +123,7 @@ def _parse_list_str_cell(value) -> list[str]:
     if not isinstance(parsed, list):
         raise ValueError(f"Expected list value, got {type(parsed).__name__}.")
 
-    return [str(item) for item in parsed]
+    return [_coerce_list_item(item) for item in parsed]
 
 
 def _parse_list_columns(df: pd.DataFrame, columns: tuple[str, ...]) -> pd.DataFrame:
@@ -105,7 +149,8 @@ def read_csv_with_schema(csv_path: Union[Path, str]) -> pd.DataFrame:
     """
     Read a CSV file and parse schema-specific list columns.
 
-    The columns 'substrates' and 'products' are parsed as list[str] values.
+    The columns 'substrates', 'products', 'substrates_names', and
+    'products_names' are parsed as list[str] values when present.
     Other columns are read with pandas defaults.
     """
     csv_path = Path(csv_path)
@@ -113,7 +158,10 @@ def read_csv_with_schema(csv_path: Union[Path, str]) -> pd.DataFrame:
         raise FileNotFoundError(f"CSV file not found: {csv_path}")
 
     df = pd.read_csv(csv_path)
-    return _parse_list_columns(df, ("substrates", "products"))
+    return _parse_list_columns(
+        df,
+        ("substrates", "products", "substrates_names", "products_names"),
+    )
 
 
 def ensure_data_subfolder(target_dir: Path) -> None:
