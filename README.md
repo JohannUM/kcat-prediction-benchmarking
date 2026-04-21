@@ -18,7 +18,7 @@ This project is aimed to provide easy and automated installation for **kcat pred
 ### Dataset Curation
 To create benchmarking datasets there are two different sources implemented: [BRENDA](https://www.brenda-enzymes.org/) and [EnzyExtract](https://github.com/ChemBioHTP/EnzyExtract).
 
-For both sources a dedicated curation pipeline is in place that filters for wildtype data, links enzyme AA-sequence and creates the substrates and products (when applicable) SMILES. The SMILES are canonicalized using the rdkit python package.
+For both sources a dedicated curation pipeline is in place that filters for wildtype data, links enzyme AA-sequence, and creates the substrates and products (when applicable) SMILES using BRENDA information and the [MoleculeResolver](https://github.com/MoleculeResolver/molecule-resolver) package. The SMILES are canonicalized using the rdkit python package.
 
 Datasets created through this functionality are directly usable with the models in this repository.
 
