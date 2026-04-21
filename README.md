@@ -71,6 +71,9 @@ echo "YOUR_CHEMEO_API_KEY" > .secrets/chemeo_api_key.txt
 
 This file path is gitignored by default so the key is not committed.
 
+### BRENDA Setup
+To use the  BRENDA dataset creation pipeline the txt flatfile has to be downloaded from [brenda-enzymes.org](https://www.brenda-enzymes.org/download.php) and be placed under `data/brenda/`. Also, to more efficiently map molecule names to SMILES the BRENDA ligand information dataset has to be downloaded from [here](https://www.brenda-enzymes.org/search_result.php?a=13), by placing a blank query and downloading all results as a csv file. The file should be placed under `data/brenda/` and be named `brenda_ligand_info.csv`.
+
 ## Usage
 
 You can find usage examples under the `scripts` directory. All scripts must be run in the **kcatbench** conda environment that got automatically created during setup.
