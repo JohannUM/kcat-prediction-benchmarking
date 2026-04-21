@@ -133,12 +133,14 @@ class DLKcatWrapper(BaseModel):
         
         output = input_data.copy()
         output['dlkcat_kcat'] = pd.NA
-        output.loc[clean_data["valid_indices"], 'dlkcat_kcat'] = results
+        assign_indices, assign_values = self._expand_predictions(clean_data, results)
+        if assign_indices:
+            output.loc[assign_indices, 'dlkcat_kcat'] = assign_values
         progress_completed(
             LOGGER,
             "dlkcat.predict",
             "DLKcat predictions assigned rows=%s.",
-            len(results),
+            len(assign_indices),
         )
 
         return output

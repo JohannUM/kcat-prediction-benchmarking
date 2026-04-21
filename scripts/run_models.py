@@ -181,7 +181,14 @@ def run_models(
 
 		try:
 			model = Model(model_id, logger=logger)
+			input_row_count = len(current_df.index)
 			current_df = model.predict(current_df)
+			output_row_count = len(current_df.index)
+			if output_row_count != input_row_count:
+				raise RuntimeError(
+					f"Model {model_id} returned {output_row_count} rows for {input_row_count} input rows. "
+					"Model wrappers must preserve row count."
+				)
 			elapsed_seconds = (datetime.now() - model_start).total_seconds()
 			successful_models.append(model_id)
 			logger.info("Model %s completed in %.2f seconds", model_id, elapsed_seconds)

@@ -130,6 +130,7 @@ class MMKcatWrapper(BaseModel):
 			input_data,
 			products_required=False,
 			multiple_smiles=True,
+			extra_key_builder=self._build_dedup_key,
 		)
 		if not clean_data["valid_indices"]:
 			progress_completed(LOGGER, "mmkcat.validation", "MMKcat input validation completed valid_rows=0.")
@@ -174,7 +175,9 @@ class MMKcatWrapper(BaseModel):
 				LOGGER.exception("MMKcat failed for row index %s.", row_index)
 				predictions.append(pd.NA)
 
-		output.loc[clean_data["valid_indices"], "mmkcat_kcat"] = predictions
+		assign_indices, assign_values = self._expand_predictions(clean_data, predictions)
+		if assign_indices:
+			output.loc[assign_indices, "mmkcat_kcat"] = assign_values
 		LOGGER.info(
 			"MMKcat prediction summary: total_valid=%s success=%s failed=%s",
 			len(clean_data["valid_indices"]),
@@ -195,9 +198,23 @@ class MMKcatWrapper(BaseModel):
 			LOGGER,
 			"mmkcat.predict",
 			"MMKcat predictions assigned rows=%s.",
-			len(clean_data["valid_indices"]),
+			len(assign_indices),
 		)
 		return output
+
+	def _build_dedup_key(
+		self,
+		row: Any,
+		sequence: str,
+		substrates: list[str],
+		products: Optional[list[str]],
+	) -> tuple[Optional[str], ...]:
+		del sequence
+		del substrates
+		del products
+		raw_products = getattr(row, "products", None)
+		normalized_products = self._normalize_products(raw_products)
+		return tuple(normalized_products)
 
 	def _predict_single_log10(
 		self,

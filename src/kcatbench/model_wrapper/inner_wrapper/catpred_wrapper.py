@@ -102,7 +102,14 @@ class CatPredWrapper(BaseModel):
             raise RuntimeError(message)
 
         target_indices = clean_data["valid_indices"]
-        mapped_indices = []
+        target_groups = clean_data.get("index_groups", [[idx] for idx in target_indices])
+        representative_to_group = {
+            rep_index: group_indices
+            for rep_index, group_indices in zip(target_indices, target_groups)
+        }
+
+        mapped_representatives = set()
+        mapped_row_indices = set()
         assign_count = 0
 
         if ORIG_IDX_COL in output_catpred.columns:
@@ -130,10 +137,16 @@ class CatPredWrapper(BaseModel):
                     out_of_range_count += 1
                     continue
 
-                output.at[matched_index, 'catpred_kcat'] = prediction
-                mapped_indices.append(matched_index)
+                group_indices = representative_to_group.get(matched_index)
+                if group_indices is None:
+                    out_of_range_count += 1
+                    continue
 
-            assign_count = len(mapped_indices)
+                output.loc[group_indices, 'catpred_kcat'] = prediction
+                mapped_representatives.add(matched_index)
+                mapped_row_indices.update(group_indices)
+
+            assign_count = len(mapped_representatives)
             if (
                 assign_count != len(target_indices)
                 or len(output_catpred.index) != len(target_indices)
@@ -156,9 +169,17 @@ class CatPredWrapper(BaseModel):
             predictions = output_catpred[prediction_col].tolist()
             assign_count = min(len(target_indices), len(predictions))
             if assign_count > 0:
-                fallback_indices = target_indices[:assign_count]
-                output.loc[fallback_indices, 'catpred_kcat'] = predictions[:assign_count]
-                mapped_indices = fallback_indices
+                partial_clean_data = {
+                    "valid_indices": target_indices[:assign_count],
+                    "index_groups": target_groups[:assign_count],
+                }
+                assign_indices, assign_values = self._expand_predictions(
+                    partial_clean_data,
+                    predictions[:assign_count],
+                )
+                output.loc[assign_indices, 'catpred_kcat'] = assign_values
+                mapped_representatives.update(target_indices[:assign_count])
+                mapped_row_indices.update(assign_indices)
 
             if assign_count != len(target_indices) or len(predictions) != len(target_indices):
                 LOGGER.warning(
@@ -173,19 +194,21 @@ class CatPredWrapper(BaseModel):
             LOGGER.error(message)
             raise RuntimeError(message)
 
-        assigned_non_null = int(output.loc[mapped_indices, 'catpred_kcat'].notna().sum()) if mapped_indices else 0
+        assigned_row_indices = list(mapped_row_indices)
+        assigned_non_null = int(output.loc[assigned_row_indices, 'catpred_kcat'].notna().sum()) if assigned_row_indices else 0
         if assigned_non_null == 0:
             message = "CatPred assignment failed: assigned predictions are all NA/NaN."
             LOGGER.error(message)
             raise RuntimeError(message)
 
-        progress_completed(LOGGER, "catpred.predict", "CatPred predictions assigned rows=%s.", assign_count)
+        progress_completed(LOGGER, "catpred.predict", "CatPred predictions assigned rows=%s.", len(assigned_row_indices))
 
         return output
 
     def _empty_clean_data(self):
         return {
             "valid_indices": [],
+            "index_groups": [],
             "substrates": [],
             "sequence": [],
         }
@@ -223,10 +246,34 @@ class CatPredWrapper(BaseModel):
 
     def _is_valid_sequence(self, sequence: str, valid_aas: set):
         return isinstance(sequence, str) and bool(sequence) and set(sequence).issubset(valid_aas)
+
+    def _prepare_substrate_smiles(self, substrates):
+        if isinstance(substrates, str):
+            substrate = substrates.strip()
+            return substrate if substrate else None
+
+        if isinstance(substrates, list):
+            cleaned_substrates = []
+            for substrate in substrates:
+                if not isinstance(substrate, str):
+                    continue
+                value = substrate.strip()
+                if value:
+                    cleaned_substrates.append(value)
+
+            if not cleaned_substrates:
+                return None
+
+            if len(cleaned_substrates) == 1:
+                return cleaned_substrates[0]
+
+            return '.'.join(cleaned_substrates)
+
+        return None
     
     def _create_csv_sh(self, parameter, input_data:pd.DataFrame, checkpoint_dir):
 
-        clean_data = self._prepare_data(input_data)
+        clean_data = self._prepare_data(input_data, multiple_smiles=True)
         valid_aas = set('ACDEFGHIKLMNPQRSTVWY')
         filtered_clean_data = self._empty_clean_data()
         smiles_list_new = []
@@ -234,12 +281,18 @@ class CatPredWrapper(BaseModel):
         invalid_smiles_indices = []
         invalid_sequence_indices = []
 
-        for row_index, smi, seq in zip(
+        for row_index, index_group, smi, seq in zip(
             clean_data["valid_indices"],
+            clean_data["index_groups"],
             clean_data["substrates"],
             clean_data["sequence"],
         ):
-            canonical_smiles = self._canonicalize_smiles(smi, parameter)
+            prepared_smiles = self._prepare_substrate_smiles(smi)
+            if prepared_smiles is None:
+                invalid_smiles_indices.append(row_index)
+                continue
+
+            canonical_smiles = self._canonicalize_smiles(prepared_smiles, parameter)
             if canonical_smiles is None:
                 invalid_smiles_indices.append(row_index)
                 continue
@@ -249,6 +302,7 @@ class CatPredWrapper(BaseModel):
                 continue
 
             filtered_clean_data["valid_indices"].append(row_index)
+            filtered_clean_data["index_groups"].append(index_group)
             filtered_clean_data["substrates"].append(canonical_smiles)
             filtered_clean_data["sequence"].append(seq)
             smiles_list_new.append(canonical_smiles)

@@ -144,12 +144,14 @@ class CataProWrapper(BaseModel):
         pred_kcat = np.mean(np.concatenate(pred_kcat_list, axis=1), axis=1, keepdims=True)
         pred_kcat_linear = np.power(10, pred_kcat).reshape(-1)
 
-        output.loc[clean_data["valid_indices"], 'catapro_kcat'] = pred_kcat_linear
+        assign_indices, assign_values = self._expand_predictions(clean_data, pred_kcat_linear.tolist())
+        if assign_indices:
+            output.loc[assign_indices, 'catapro_kcat'] = assign_values
         progress_completed(
             LOGGER,
             "catapro.predict",
             "Catapro predictions assigned rows=%s.",
-            len(clean_data["valid_indices"]),
+            len(assign_indices),
         )
 
         return output
@@ -157,13 +159,15 @@ class CataProWrapper(BaseModel):
     def _filter_valid_smiles(self, clean_data):
         filtered_data = {
             "valid_indices": [],
+            "index_groups": [],
             "sequence": [],
             "substrates": [],
         }
         invalid_smiles_indices = []
 
-        for row_idx, seq, smile in zip(
+        for row_idx, index_group, seq, smile in zip(
             clean_data["valid_indices"],
+            clean_data["index_groups"],
             clean_data["sequence"],
             clean_data["substrates"],
         ):
@@ -177,6 +181,7 @@ class CataProWrapper(BaseModel):
                 continue
 
             filtered_data["valid_indices"].append(row_idx)
+            filtered_data["index_groups"].append(index_group)
             filtered_data["sequence"].append(seq)
             filtered_data["substrates"].append(smile)
 

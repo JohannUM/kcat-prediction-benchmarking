@@ -1,6 +1,9 @@
 import sys
 import zipfile
 import logging
+import io
+import re
+from contextlib import redirect_stderr, redirect_stdout
 import pandas as pd
 from kcatbench.util import MODELS_DIR, DATA_DIR, DEVICE, ensure_data_subfolder, force_torch_load_device, wget_download, work_in_dir
 from kcatbench.model_wrapper.base_model import BaseModel
@@ -14,6 +17,10 @@ if str(TURNUP_CODE_DIR) not in sys.path:
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+_EMPTY_RDKit_ERROR_LINE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\]\s+ERROR:$")
+_EMPTY_RDKit_TIMESTAMP_LINE = re.compile(r"^\[\d{2}:\d{2}:\d{2}\]$")
 
 
 class TurNuPWrapper(BaseModel):
@@ -83,25 +90,113 @@ class TurNuPWrapper(BaseModel):
                 "TurNuP inference started valid_rows=%s.",
                 len(valid_indices),
             )
-            
-            result = kcat_predicton(substrates=substrates, products=products, enzymes=enzymes)
+            predictions = []
+            failed_rows = 0
 
-            predictions = result["kcat [s^(-1)]"].to_list()
-            progress_completed(LOGGER, "turnup.inference", "TurNuP inference completed predicted_rows=%s.", len(predictions))
-
-            assign_count = min(len(valid_indices), len(predictions))
-            output.loc[valid_indices[:assign_count], 'turnup_kcat'] = predictions[:assign_count]
-            if assign_count != len(valid_indices) or len(predictions) != len(valid_indices):
-                LOGGER.warning(
-                    "TurNuP prediction count mismatch: expected=%s predicted=%s assigned=%s",
-                    len(valid_indices),
-                    len(predictions),
-                    assign_count,
+            for row_pos, row_index in enumerate(valid_indices):
+                prediction = self._predict_single_reaction(
+                    kcat_predicton=kcat_predicton,
+                    substrate=substrates[row_pos],
+                    product=products[row_pos],
+                    enzyme=enzymes[row_pos],
+                    row_index=row_index,
                 )
+                if pd.isna(prediction):
+                    failed_rows += 1
+                predictions.append(prediction)
 
-            progress_completed(LOGGER, "turnup.predict", "TurNuP predictions assigned rows=%s.", assign_count)
+            success_rows = len(predictions) - failed_rows
+            progress_completed(
+                LOGGER,
+                "turnup.inference",
+                "TurNuP inference completed attempted_rows=%s successful_rows=%s failed_rows=%s.",
+                len(predictions),
+                success_rows,
+                failed_rows,
+            )
+
+            assign_indices, assign_values = self._expand_predictions(clean_data, predictions)
+            if assign_indices:
+                output.loc[assign_indices, 'turnup_kcat'] = assign_values
+
+            progress_completed(
+                LOGGER,
+                "turnup.predict",
+                "TurNuP predictions assigned rows=%s.",
+                len(assign_indices),
+            )
 
         return output
+
+    def _predict_single_reaction(self, kcat_predicton, substrate: str, product: str, enzyme: str, row_index: int):
+        stdout_buffer = io.StringIO()
+        stderr_buffer = io.StringIO()
+
+        try:
+            with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
+                result = kcat_predicton(
+                    substrates=[substrate],
+                    products=[product],
+                    enzymes=[enzyme],
+                )
+
+            prediction = self._extract_prediction(result)
+            return prediction
+        except Exception as exc:
+            stderr_lines = self._filter_stderr_lines(stderr_buffer.getvalue())
+            message = (
+                "TurNuP row failed index=%s substrate=%s product=%s sequence_len=%s error=%s: %s"
+            )
+
+            if stderr_lines:
+                LOGGER.error(
+                    message + " stderr=%s",
+                    row_index,
+                    self._preview_for_log(substrate),
+                    self._preview_for_log(product),
+                    len(enzyme),
+                    type(exc).__name__,
+                    exc,
+                    " | ".join(stderr_lines[:3]),
+                )
+            else:
+                LOGGER.error(
+                    message,
+                    row_index,
+                    self._preview_for_log(substrate),
+                    self._preview_for_log(product),
+                    len(enzyme),
+                    type(exc).__name__,
+                    exc,
+                )
+            return pd.NA
+
+    def _extract_prediction(self, result: pd.DataFrame):
+        prediction_column = "kcat [s^(-1)]"
+        if prediction_column not in result.columns or result.empty:
+            return pd.NA
+
+        value = result.iloc[0][prediction_column]
+        return value if pd.notna(value) else pd.NA
+
+    def _filter_stderr_lines(self, stderr_text: str) -> list[str]:
+        filtered_lines = []
+        for line in stderr_text.splitlines():
+            stripped_line = line.strip()
+            if not stripped_line:
+                continue
+            if _EMPTY_RDKit_ERROR_LINE.match(stripped_line):
+                continue
+            if _EMPTY_RDKit_TIMESTAMP_LINE.match(stripped_line):
+                continue
+            filtered_lines.append(stripped_line)
+        return filtered_lines
+
+    def _preview_for_log(self, value: str, max_len: int = 100) -> str:
+        clean_value = value.strip()
+        if len(clean_value) <= max_len:
+            return clean_value
+        return clean_value[: max_len - 3] + "..."
         
     def _prepare_turnup_input(self, clean_data: dict[str, list]):
         substrates = [";".join(items) for items in clean_data["substrates"]]

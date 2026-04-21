@@ -97,8 +97,10 @@ class UniKPWrapper(BaseModel):
         progress_completed(LOGGER, "unikp.inference", "UniKP model inference completed predicted_rows=%s.", len(pre_label_pow))
         
         output['unikp_kcat'] = pd.NA
-        output.loc[clean_data["valid_indices"], 'unikp_kcat'] = pre_label_pow
-        progress_completed(LOGGER, "unikp.predict", "UniKP predictions assigned rows=%s.", len(clean_data["valid_indices"]))
+        assign_indices, assign_values = self._expand_predictions(clean_data, pre_label_pow)
+        if assign_indices:
+            output.loc[assign_indices, 'unikp_kcat'] = assign_values
+        progress_completed(LOGGER, "unikp.predict", "UniKP predictions assigned rows=%s.", len(assign_indices))
         
         return output
     
