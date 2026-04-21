@@ -8,12 +8,12 @@ This project is aimed to provide easy and automated installation for **kcat pred
 ### Current Models
 | Model  | Location        | Source Repository                                                                    |
 | ------ | --------------- | ------------------------------------------------------------------------------------ |
-| DLKcat | `models/DLKcat` | [https://github.com/SysBioChalmers/DLKcat](https://github.com/SysBioChalmers/DLKcat) |
-| MMKcat | `models/MMKcat` | [https://github.com/ProEcho1/MMKcat](https://github.com/ProEcho1/MMKcat) |
-| CataPro | `models/CataPro` | [https://github.com/zchwang/CataPro](https://github.com/zchwang/CataPro) |
-| CatPred | `models/CatPred` | [https://github.com/maranasgroup/CatPred](https://github.com/maranasgroup/CatPred) |
-| TurNuP | `models/TurNuP` | [https://github.com/AlexanderKroll/kcat_prediction_function](https://github.com/AlexanderKroll/kcat_prediction_function) |
-| UniKP | `models/UniKP` | [https://github.com/Luo-SynBioLab/UniKP](https://github.com/Luo-SynBioLab/UniKP) |
+| DLKcat | `models/DLKcat` | [GitHub: SysBioChalmers/DLKcat](https://github.com/SysBioChalmers/DLKcat) |
+| MMKcat | `models/MMKcat` | [GitHub: ProEcho1/MMKcat](https://github.com/ProEcho1/MMKcat) |
+| CataPro | `models/CataPro` | [GitHub: zchwang/CataPro](https://github.com/zchwang/CataPro) |
+| CatPred | `models/CatPred` | [GitHub: maranasgroup/CatPred](https://github.com/maranasgroup/CatPred) |
+| TurNuP | `models/TurNuP` | [GitHub: AlexanderKroll/kcat_prediction_function](https://github.com/AlexanderKroll/kcat_prediction_function) |
+| UniKP | `models/UniKP` | [GitHub: Luo-SynBioLab/UniKP](https://github.com/Luo-SynBioLab/UniKP) |
 
 ### Dataset Curation
 To create benchmarking datasets there are two different sources implemented: [BRENDA](https://www.brenda-enzymes.org/) and [EnzyExtract](https://github.com/ChemBioHTP/EnzyExtract).
