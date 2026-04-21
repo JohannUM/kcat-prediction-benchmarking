@@ -15,6 +15,13 @@ This project is aimed to provide easy and automated installation for **kcat pred
 | TurNuP | `models/TurNuP` | [https://github.com/AlexanderKroll/kcat_prediction_function](https://github.com/AlexanderKroll/kcat_prediction_function) |
 | UniKP | `models/UniKP` | [https://github.com/Luo-SynBioLab/UniKP](https://github.com/Luo-SynBioLab/UniKP) |
 
+### Dataset Curation
+To create benchmarking datasets there are two different sources implemented: [BRENDA](https://www.brenda-enzymes.org/) and [EnzyExtract](https://github.com/ChemBioHTP/EnzyExtract).
+
+For both sources a dedicated curation pipeline is in place that filters for wildtype data, links enzyme AA-sequence and creates the substrates and products (when applicable) SMILES. The SMILES are canonicalized using the rdkit python package.
+
+Datasets created through this functionality are directly usable with the models in this repository.
+
 ## Requirements
 
 Currently only linux systems with cuda enabled device (GPU) are supported.
