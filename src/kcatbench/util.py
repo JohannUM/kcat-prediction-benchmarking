@@ -13,7 +13,6 @@ import pandas as pd
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 CONFIG_FILE = ROOT_DIR / "config.json"
-_DEFAULT_CHEMEO_API_KEY_FILE = ".secrets/chemeo_api_key.txt"
 
 _config = {}
 if CONFIG_FILE.is_file():
@@ -52,42 +51,6 @@ def _resolve_optional_device(config_key: str) -> Optional[str]:
 
 
 SECOND_DEVICE = _resolve_optional_device("second_device")
-
-
-def resolve_chemeo_api_key_file_path() -> Path:
-    """Resolve the configured Chemeo API key file path.
-
-    The path is read from config key "chemeo_api_key_file" and falls back to
-    a repository-local default path.
-    """
-    path_str = _config.get("chemeo_api_key_file", _DEFAULT_CHEMEO_API_KEY_FILE)
-    path = Path(path_str)
-    return path if path.is_absolute() else ROOT_DIR / path
-
-
-def load_chemeo_api_key(required: bool = True) -> Optional[str]:
-    """Load the Chemeo API key from the configured key file."""
-    key_path = resolve_chemeo_api_key_file_path()
-    if not key_path.is_file():
-        if required:
-            raise FileNotFoundError(
-                f"Chemeo API key file not found at: {key_path}. "
-                "Create the file and add your key, or update 'chemeo_api_key_file' in config.json."
-            )
-        return None
-
-    with open(key_path, "r", encoding="utf-8") as handle:
-        key = handle.read().strip()
-
-    if not key:
-        if required:
-            raise ValueError(
-                f"Chemeo API key file is empty at: {key_path}. "
-                "Add your key to the file or update 'chemeo_api_key_file' in config.json."
-            )
-        return None
-
-    return key
 
 
 def _parse_list_str_cell(value) -> list[str]:

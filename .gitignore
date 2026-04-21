@@ -61,3 +61,6 @@ venv/
 
 # Jupyter checkpoints
 .ipynb_checkpoints/
+
+# Temporary notebooks
+scripts/temp_*.ipynb

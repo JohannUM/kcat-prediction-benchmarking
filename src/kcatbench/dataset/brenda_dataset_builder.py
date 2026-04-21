@@ -13,20 +13,25 @@ from urllib.request import Request, urlopen
 
 import pandas as pd
 
-from kcatbench.util import DATA_DIR, ensure_data_subfolder, load_chemeo_api_key
+from kcatbench.util import DATA_DIR, ensure_data_subfolder, read_csv_with_schema
 
 
 logger = logging.getLogger(__name__)
 
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_CONFIG_FILE = _REPO_ROOT / "config.json"
 _DEFAULT_PROCESSED_BASENAME = "brenda_processed"
+_DEFAULT_FILTERED_BASENAME = "brenda_filtered"
 _DEFAULT_BRENDA_SUBDIR = "brenda"
 _DEFAULT_SEQUENCE_CACHE_FILENAME = "uniprot_sequence_cache.json"
-_DEFAULT_LIGAND_INFO_FILENAME = "brenda_ligand_info.csv"
-_DEFAULT_LIGAND_LOOKUP_CACHE_FILENAME = "brenda_ligand_lookup_cache.json"
+# Keep this default filename for compatibility with existing BRENDA source exports.
+_DEFAULT_MOLECULE_INFO_FILENAME = "brenda_ligand_info.csv"
+_DEFAULT_MOLECULE_LOOKUP_CACHE_FILENAME = "brenda_molecule_lookup_cache.json"
+_DEFAULT_CHEMEO_API_KEY_FILE = ".secrets/chemeo_api_key.txt"
 _MOLECULE_RESOLVER_IDENTIFIER_NAME = "name"
 _MOLECULE_RESOLVER_IDENTIFIER_INCHI = "inchi"
 _MUTANT_KEYWORDS = {"mutant", "mutated", "variant", "engineered"}
-_LIGAND_INFO_COLUMNS = (
+_MOLECULE_INFO_COLUMNS = (
     "ligand",
     "ec_number",
     "role",
@@ -35,7 +40,7 @@ _LIGAND_INFO_COLUMNS = (
     "chebi",
     "references",
 )
-_LIGAND_LOOKUP_COLUMNS = (
+_MOLECULE_LOOKUP_COLUMNS = (
     "substrate_or_product_name",
     "inchi",
     "chebi",
@@ -82,6 +87,11 @@ _UNIPROT_ACCESSION_FULL_PATTERN = re.compile(
 )
 _UNIPROT_FASTA_URL_TEMPLATE = "https://rest.uniprot.org/uniprotkb/{accession}.fasta"
 
+_BRENDA_CONFIG: dict[str, Any] = {}
+if _CONFIG_FILE.is_file():
+    with open(_CONFIG_FILE, "r", encoding="utf-8") as handle:
+        _BRENDA_CONFIG = json.load(handle)
+
 
 def _bump_counter(stats: Optional[dict[str, int]], key: str, amount: int = 1) -> None:
     """Increment a named counter in an optional stats dictionary."""
@@ -95,6 +105,38 @@ def _log_counter_event(enable_logging: bool, event: str, **payload: Any) -> None
     if not enable_logging:
         return
     logger.info("brenda_build_db.%s %s", event, json.dumps(payload, sort_keys=True, default=str))
+
+
+def _resolve_chemeo_api_key_file_path() -> Path:
+    """Resolve the configured Chemeo API key file path for BRENDA SMILES lookup."""
+    path_str = _BRENDA_CONFIG.get("chemeo_api_key_file", _DEFAULT_CHEMEO_API_KEY_FILE)
+    path = Path(path_str)
+    return path if path.is_absolute() else _REPO_ROOT / path
+
+
+def _load_chemeo_api_key(required: bool = True) -> Optional[str]:
+    """Load the Chemeo API key used by MoleculeResolver fallback."""
+    key_path = _resolve_chemeo_api_key_file_path()
+    if not key_path.is_file():
+        if required:
+            raise FileNotFoundError(
+                f"Chemeo API key file not found at: {key_path}. "
+                "Create the file and add your key, or update 'chemeo_api_key_file' in config.json."
+            )
+        return None
+
+    with open(key_path, "r", encoding="utf-8") as handle:
+        key = handle.read().strip()
+
+    if not key:
+        if required:
+            raise ValueError(
+                f"Chemeo API key file is empty at: {key_path}. "
+                "Add your key to the file or update 'chemeo_api_key_file' in config.json."
+            )
+        return None
+
+    return key
 
 
 def parse_brenda_flatfile(filepath: str | Path, stats: Optional[dict[str, int]] = None):
@@ -350,36 +392,36 @@ def _resolve_sequence_cache_path(target_dir: Path, sequence_cache_path: str | Pa
     return (target_dir / candidate).resolve()
 
 
-def _resolve_ligand_info_path(target_dir: Path, ligand_info_path: str | Path | None) -> Path:
-    """Resolve and validate the BRENDA ligand info source path."""
-    if ligand_info_path is None:
-        candidate = (target_dir / _DEFAULT_LIGAND_INFO_FILENAME).resolve()
+def _resolve_molecule_info_path(target_dir: Path, molecule_info_path: str | Path | None) -> Path:
+    """Resolve and validate the BRENDA molecule info source path."""
+    if molecule_info_path is None:
+        candidate = (target_dir / _DEFAULT_MOLECULE_INFO_FILENAME).resolve()
     else:
-        candidate = Path(ligand_info_path)
+        candidate = Path(molecule_info_path)
         if not candidate.is_absolute():
             candidate = (target_dir / candidate).resolve()
 
     if not candidate.is_file():
-        raise FileNotFoundError(f"BRENDA ligand info file was not found at: {candidate}")
+        raise FileNotFoundError(f"BRENDA molecule info file was not found at: {candidate}")
     return candidate
 
 
-def _resolve_ligand_lookup_cache_path(
+def _resolve_molecule_lookup_cache_path(
     target_dir: Path,
-    ligand_lookup_cache_path: str | Path | None,
+    molecule_lookup_cache_path: str | Path | None,
 ) -> Path:
-    """Resolve the output path for the ligand lookup JSON cache."""
-    if ligand_lookup_cache_path is None:
-        return (target_dir / _DEFAULT_LIGAND_LOOKUP_CACHE_FILENAME).resolve()
+    """Resolve the output path for the molecule lookup JSON cache."""
+    if molecule_lookup_cache_path is None:
+        return (target_dir / _DEFAULT_MOLECULE_LOOKUP_CACHE_FILENAME).resolve()
 
-    candidate = Path(ligand_lookup_cache_path)
+    candidate = Path(molecule_lookup_cache_path)
     if candidate.is_absolute():
         return candidate
     return (target_dir / candidate).resolve()
 
 
-def _clean_ligand_mapping_value(value: Any) -> Optional[str]:
-    """Normalize ligand mapping values and convert blank markers to None."""
+def _clean_molecule_mapping_value(value: Any) -> Optional[str]:
+    """Normalize molecule mapping values and convert blank markers to None."""
     if value is None or value is pd.NA:
         return None
 
@@ -399,67 +441,68 @@ def _clean_ligand_mapping_value(value: Any) -> Optional[str]:
     return text
 
 
-def _load_brenda_ligand_info(
-    ligand_info_path: Path,
+def _load_brenda_molecule_info(
+    molecule_info_path: Path,
     stats: Optional[dict[str, int]] = None,
 ) -> pd.DataFrame:
-    """Load and normalize the BRENDA ligand info table for name-based mapping."""
-    ligand_info_df: Optional[pd.DataFrame] = None
+    """Load and normalize the BRENDA molecule info table for name-based mapping."""
+    molecule_info_df: Optional[pd.DataFrame] = None
     decode_error: Optional[UnicodeDecodeError] = None
     for encoding in ("utf-8", "latin-1", "cp1252"):
         try:
-            ligand_info_df = pd.read_csv(
-                ligand_info_path,
+            molecule_info_df = pd.read_csv(
+                molecule_info_path,
                 sep="\t",
-                names=list(_LIGAND_INFO_COLUMNS),
+                names=list(_MOLECULE_INFO_COLUMNS),
                 header=None,
                 dtype=str,
                 keep_default_na=False,
                 on_bad_lines="skip",
                 encoding=encoding,
-                usecols=list(range(len(_LIGAND_INFO_COLUMNS))),
+                usecols=list(range(len(_MOLECULE_INFO_COLUMNS))),
             )
-            _bump_counter(stats, f"ligand_info_encoding_{encoding}")
+            _bump_counter(stats, f"molecule_info_encoding_{encoding}")
             break
         except UnicodeDecodeError as exc:
             decode_error = exc
 
-    if ligand_info_df is None:
+    if molecule_info_df is None:
         assert decode_error is not None
         raise decode_error
 
-    _bump_counter(stats, "ligand_info_rows_total", len(ligand_info_df.index))
-    if ligand_info_df.empty:
-        _bump_counter(stats, "ligand_info_rows_empty")
-        return pd.DataFrame(columns=["ligand", "_normalized_ligand", "inchi", "chebi"])
+    _bump_counter(stats, "molecule_info_rows_total", len(molecule_info_df.index))
+    if molecule_info_df.empty:
+        _bump_counter(stats, "molecule_info_rows_empty")
+        return pd.DataFrame(columns=["molecule", "_normalized_molecule", "inchi", "chebi"])
 
-    first_row_values = [str(ligand_info_df.iloc[0][column]).strip().lower() for column in _LIGAND_INFO_COLUMNS]
-    if first_row_values == list(_LIGAND_INFO_COLUMNS):
-        ligand_info_df = ligand_info_df.iloc[1:].reset_index(drop=True)
-        _bump_counter(stats, "ligand_info_header_row_dropped")
+    first_row_values = [str(molecule_info_df.iloc[0][column]).strip().lower() for column in _MOLECULE_INFO_COLUMNS]
+    if first_row_values == list(_MOLECULE_INFO_COLUMNS):
+        molecule_info_df = molecule_info_df.iloc[1:].reset_index(drop=True)
+        _bump_counter(stats, "molecule_info_header_row_dropped")
 
-    ligand_info_df["ligand"] = ligand_info_df["ligand"].astype(str).str.strip()
-    rows_before_ligand_filter = len(ligand_info_df.index)
-    ligand_info_df = ligand_info_df[ligand_info_df["ligand"] != ""].copy()
+    molecule_info_df = molecule_info_df.rename(columns={"ligand": "molecule"})
+    molecule_info_df["molecule"] = molecule_info_df["molecule"].astype(str).str.strip()
+    rows_before_molecule_filter = len(molecule_info_df.index)
+    molecule_info_df = molecule_info_df[molecule_info_df["molecule"] != ""].copy()
     _bump_counter(
         stats,
-        "ligand_info_rows_without_ligand",
-        rows_before_ligand_filter - len(ligand_info_df.index),
+        "molecule_info_rows_without_molecule",
+        rows_before_molecule_filter - len(molecule_info_df.index),
     )
 
-    if ligand_info_df.empty:
-        _bump_counter(stats, "ligand_info_rows_empty_after_ligand_filter")
-        return pd.DataFrame(columns=["ligand", "_normalized_ligand", "inchi", "chebi"])
+    if molecule_info_df.empty:
+        _bump_counter(stats, "molecule_info_rows_empty_after_molecule_filter")
+        return pd.DataFrame(columns=["molecule", "_normalized_molecule", "inchi", "chebi"])
 
-    ligand_info_df["_normalized_ligand"] = ligand_info_df["ligand"].map(_normalize_compound_name)
-    ligand_info_df["inchi"] = ligand_info_df["inchi"].map(_clean_ligand_mapping_value)
-    ligand_info_df["chebi"] = ligand_info_df["chebi"].map(_clean_ligand_mapping_value)
-    _bump_counter(stats, "ligand_info_rows_with_ligand", len(ligand_info_df.index))
+    molecule_info_df["_normalized_molecule"] = molecule_info_df["molecule"].map(_normalize_compound_name)
+    molecule_info_df["inchi"] = molecule_info_df["inchi"].map(_clean_molecule_mapping_value)
+    molecule_info_df["chebi"] = molecule_info_df["chebi"].map(_clean_molecule_mapping_value)
+    _bump_counter(stats, "molecule_info_rows_with_molecule", len(molecule_info_df.index))
 
-    return ligand_info_df[["ligand", "_normalized_ligand", "inchi", "chebi"]].reset_index(drop=True)
+    return molecule_info_df[["molecule", "_normalized_molecule", "inchi", "chebi"]].reset_index(drop=True)
 
 
-def _extract_unique_ligand_names_from_curated_df(
+def _extract_unique_molecule_names_from_curated_df(
     curated_df: pd.DataFrame,
     stats: Optional[dict[str, int]] = None,
 ) -> pd.DataFrame:
@@ -482,7 +525,7 @@ def _extract_unique_ligand_names_from_curated_df(
                 unique_names[text] = _normalize_compound_name(text)
 
     if not unique_names:
-        _bump_counter(stats, "ligand_lookup_names_total", 0)
+        _bump_counter(stats, "molecule_lookup_names_total", 0)
         return pd.DataFrame(columns=["substrate_or_product_name", "normalized_name"])
 
     rows = [
@@ -495,11 +538,11 @@ def _extract_unique_ligand_names_from_curated_df(
     rows.sort(key=lambda row: (row["normalized_name"], row["substrate_or_product_name"]))
 
     names_df = pd.DataFrame(rows).reset_index(drop=True)
-    _bump_counter(stats, "ligand_lookup_names_total", len(names_df.index))
+    _bump_counter(stats, "molecule_lookup_names_total", len(names_df.index))
     return names_df
 
 
-def _select_most_frequent_ligand_value(
+def _select_most_frequent_molecule_value(
     values: pd.Series,
     *,
     ambiguity_counter_key: str,
@@ -509,7 +552,7 @@ def _select_most_frequent_ligand_value(
     """Select the most frequent non-null mapping value with ambiguity tracking."""
     frequencies: defaultdict[str, int] = defaultdict(int)
     for value in values:
-        clean_value = _clean_ligand_mapping_value(value)
+        clean_value = _clean_molecule_mapping_value(value)
         if clean_value is None:
             continue
         frequencies[clean_value] += 1
@@ -530,58 +573,58 @@ def _select_most_frequent_ligand_value(
     return ranked_values[0][0]
 
 
-def _build_ligand_lookup_dataframe(
+def _build_molecule_lookup_dataframe(
     curated_df: pd.DataFrame,
-    ligand_info_df: pd.DataFrame,
+    molecule_info_df: pd.DataFrame,
     stats: Optional[dict[str, int]] = None,
 ) -> pd.DataFrame:
     """Build the substrate/product lookup DataFrame with inchi/chebi placeholders."""
-    names_df = _extract_unique_ligand_names_from_curated_df(curated_df, stats=stats)
+    names_df = _extract_unique_molecule_names_from_curated_df(curated_df, stats=stats)
     if names_df.empty:
-        _bump_counter(stats, "ligand_lookup_rows_total", 0)
-        return pd.DataFrame(columns=list(_LIGAND_LOOKUP_COLUMNS))
+        _bump_counter(stats, "molecule_lookup_rows_total", 0)
+        return pd.DataFrame(columns=list(_MOLECULE_LOOKUP_COLUMNS))
 
-    ligand_groups: dict[str, pd.DataFrame] = {
+    molecule_groups: dict[str, pd.DataFrame] = {
         str(group_key): group.copy()
-        for group_key, group in ligand_info_df.groupby("_normalized_ligand", sort=False)
+        for group_key, group in molecule_info_df.groupby("_normalized_molecule", sort=False)
     }
 
     lookup_rows: list[dict[str, Any]] = []
     for row in names_df.itertuples(index=False):
         substrate_or_product_name = str(row.substrate_or_product_name)
         normalized_name = str(row.normalized_name)
-        matches = ligand_groups.get(normalized_name)
+        matches = molecule_groups.get(normalized_name)
 
         inchi_value: Any = pd.NA
         chebi_value: Any = pd.NA
         if matches is not None and not matches.empty:
-            inchi_value = _select_most_frequent_ligand_value(
+            inchi_value = _select_most_frequent_molecule_value(
                 matches["inchi"],
-                ambiguity_counter_key="ligand_lookup_inchi_ambiguity",
-                tie_counter_key="ligand_lookup_inchi_tie",
+                ambiguity_counter_key="molecule_lookup_inchi_ambiguity",
+                tie_counter_key="molecule_lookup_inchi_tie",
                 stats=stats,
             )
-            chebi_value = _select_most_frequent_ligand_value(
+            chebi_value = _select_most_frequent_molecule_value(
                 matches["chebi"],
-                ambiguity_counter_key="ligand_lookup_chebi_ambiguity",
-                tie_counter_key="ligand_lookup_chebi_tie",
+                ambiguity_counter_key="molecule_lookup_chebi_ambiguity",
+                tie_counter_key="molecule_lookup_chebi_tie",
                 stats=stats,
             )
 
         inchi_missing = _is_missing_scalar(inchi_value)
         chebi_missing = _is_missing_scalar(chebi_value)
         if inchi_missing:
-            _bump_counter(stats, "ligand_lookup_unresolved_inchi")
+            _bump_counter(stats, "molecule_lookup_unresolved_inchi")
         else:
-            _bump_counter(stats, "ligand_lookup_mapped_inchi")
+            _bump_counter(stats, "molecule_lookup_mapped_inchi")
 
         if chebi_missing:
-            _bump_counter(stats, "ligand_lookup_unresolved_chebi")
+            _bump_counter(stats, "molecule_lookup_unresolved_chebi")
         else:
-            _bump_counter(stats, "ligand_lookup_mapped_chebi")
+            _bump_counter(stats, "molecule_lookup_mapped_chebi")
 
         if inchi_missing and chebi_missing:
-            _bump_counter(stats, "ligand_lookup_unresolved_both")
+            _bump_counter(stats, "molecule_lookup_unresolved_both")
 
         lookup_rows.append(
             {
@@ -592,22 +635,22 @@ def _build_ligand_lookup_dataframe(
             }
         )
 
-    lookup_df = pd.DataFrame(lookup_rows, columns=list(_LIGAND_LOOKUP_COLUMNS)).reset_index(drop=True)
-    _bump_counter(stats, "ligand_lookup_rows_total", len(lookup_df.index))
+    lookup_df = pd.DataFrame(lookup_rows, columns=list(_MOLECULE_LOOKUP_COLUMNS)).reset_index(drop=True)
+    _bump_counter(stats, "molecule_lookup_rows_total", len(lookup_df.index))
     return lookup_df
 
 
-def _write_ligand_lookup_cache(
+def _write_molecule_lookup_cache(
     cache_path: Path,
-    ligand_lookup_df: pd.DataFrame,
+    molecule_lookup_df: pd.DataFrame,
     stats: Optional[dict[str, int]] = None,
 ) -> None:
-    """Persist the ligand lookup DataFrame as an atomic JSON cache file."""
+    """Persist the molecule lookup DataFrame as an atomic JSON cache file."""
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = cache_path.with_name(f"{cache_path.name}.tmp")
 
     payload: list[dict[str, Any]] = []
-    for row in ligand_lookup_df.itertuples(index=False):
+    for row in molecule_lookup_df.itertuples(index=False):
         payload.append(
             {
                 "substrate_or_product_name": str(row.substrate_or_product_name),
@@ -622,11 +665,11 @@ def _write_ligand_lookup_cache(
         with open(tmp_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
         tmp_path.replace(cache_path)
-        _bump_counter(stats, "ligand_lookup_cache_write_success")
-        _bump_counter(stats, "ligand_lookup_cache_rows_written", len(payload))
+        _bump_counter(stats, "molecule_lookup_cache_write_success")
+        _bump_counter(stats, "molecule_lookup_cache_rows_written", len(payload))
     except OSError:
-        _bump_counter(stats, "ligand_lookup_cache_write_error")
-        logger.warning("Could not write ligand lookup cache to %s.", cache_path)
+        _bump_counter(stats, "molecule_lookup_cache_write_error")
+        logger.warning("Could not write molecule lookup cache to %s.", cache_path)
         try:
             if tmp_path.exists():
                 tmp_path.unlink()
@@ -640,6 +683,205 @@ def _clean_scalar_text(value: Any) -> Optional[str]:
         return None
     text = str(value).strip()
     return text if text else None
+
+
+def _load_molecule_lookup_cache(
+    cache_path: Path,
+    *,
+    canonicalize_cached_smiles: bool = False,
+    stats: Optional[dict[str, int]] = None,
+) -> pd.DataFrame:
+    """Load molecule lookup cache rows from JSON, optionally re-canonicalizing cached SMILES."""
+    if not cache_path.is_file():
+        _bump_counter(stats, "molecule_lookup_cache_file_missing")
+        return pd.DataFrame(columns=list(_MOLECULE_LOOKUP_COLUMNS))
+
+    try:
+        with open(cache_path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        _bump_counter(stats, "molecule_lookup_cache_load_error")
+        logger.warning("Could not load molecule lookup cache at %s. Using empty cache.", cache_path)
+        return pd.DataFrame(columns=list(_MOLECULE_LOOKUP_COLUMNS))
+
+    if not isinstance(payload, list):
+        _bump_counter(stats, "molecule_lookup_cache_invalid_payload")
+        logger.warning("Molecule lookup cache payload is not a JSON list at %s.", cache_path)
+        return pd.DataFrame(columns=list(_MOLECULE_LOOKUP_COLUMNS))
+
+    cache_by_normalized_name: dict[str, dict[str, Any]] = {}
+    invalid_rows = 0
+    duplicate_rows = 0
+    for entry in payload:
+        if not isinstance(entry, dict):
+            invalid_rows += 1
+            continue
+
+        substrate_or_product_name = _clean_scalar_text(entry.get("substrate_or_product_name"))
+        if substrate_or_product_name is None:
+            invalid_rows += 1
+            continue
+
+        normalized_name = _normalize_compound_name(substrate_or_product_name)
+        if normalized_name in cache_by_normalized_name:
+            duplicate_rows += 1
+
+        inchi_value = _clean_molecule_mapping_value(entry.get("inchi"))
+        chebi_value = _clean_molecule_mapping_value(entry.get("chebi"))
+        smiles_value = _clean_scalar_text(entry.get("smiles"))
+
+        if smiles_value is not None and canonicalize_cached_smiles:
+            recanonicalized_smiles = _canonicalize_smiles(smiles_value, stats=stats)
+            if recanonicalized_smiles is not None:
+                smiles_value = recanonicalized_smiles
+                _bump_counter(stats, "molecule_lookup_cache_smiles_recanonicalized")
+            else:
+                _bump_counter(stats, "molecule_lookup_cache_smiles_recanonicalization_failed_preserved")
+
+        cache_by_normalized_name[normalized_name] = {
+            "substrate_or_product_name": substrate_or_product_name,
+            "inchi": pd.NA if inchi_value is None else inchi_value,
+            "chebi": pd.NA if chebi_value is None else chebi_value,
+            "smiles": pd.NA if smiles_value is None else smiles_value,
+        }
+
+    if invalid_rows:
+        _bump_counter(stats, "molecule_lookup_cache_invalid_rows", invalid_rows)
+    if duplicate_rows:
+        _bump_counter(stats, "molecule_lookup_cache_duplicate_name_rows", duplicate_rows)
+
+    cache_rows = sorted(
+        cache_by_normalized_name.values(),
+        key=lambda row: _normalize_compound_name(str(row["substrate_or_product_name"])),
+    )
+    cache_df = pd.DataFrame(cache_rows, columns=list(_MOLECULE_LOOKUP_COLUMNS)).reset_index(drop=True)
+    _bump_counter(stats, "molecule_lookup_cache_rows_loaded", len(cache_df.index))
+    if not cache_df.empty:
+        resolved_cache_rows = int((~cache_df["smiles"].apply(_is_missing_scalar)).sum())
+        _bump_counter(stats, "molecule_lookup_cache_rows_loaded_with_smiles", resolved_cache_rows)
+    return cache_df
+
+
+def _apply_cached_smiles_to_molecule_lookup(
+    molecule_lookup_df: pd.DataFrame,
+    cached_molecule_lookup_df: pd.DataFrame,
+    stats: Optional[dict[str, int]] = None,
+) -> pd.DataFrame:
+    """Apply cached SMILES to lookup rows by normalized name without external resolution."""
+    if molecule_lookup_df.empty:
+        _bump_counter(stats, "molecule_lookup_cache_lookup_rows_total", 0)
+        return molecule_lookup_df.copy()
+
+    if cached_molecule_lookup_df.empty:
+        _bump_counter(stats, "molecule_lookup_cache_lookup_rows_total", len(molecule_lookup_df.index))
+        _bump_counter(stats, "molecule_lookup_cache_misses", len(molecule_lookup_df.index))
+        return molecule_lookup_df.copy()
+
+    cache_smiles_by_normalized_name: dict[str, Any] = {}
+    for row in cached_molecule_lookup_df.itertuples(index=False):
+        substrate_or_product_name = _clean_scalar_text(row.substrate_or_product_name)
+        if substrate_or_product_name is None:
+            continue
+        cache_smiles_by_normalized_name[_normalize_compound_name(substrate_or_product_name)] = row.smiles
+
+    applied_df = molecule_lookup_df.copy()
+    _bump_counter(stats, "molecule_lookup_cache_lookup_rows_total", len(applied_df.index))
+    for row in applied_df.itertuples(index=True):
+        substrate_or_product_name = _clean_scalar_text(row.substrate_or_product_name)
+        if substrate_or_product_name is None:
+            _bump_counter(stats, "molecule_lookup_cache_misses")
+            continue
+
+        normalized_name = _normalize_compound_name(substrate_or_product_name)
+        if normalized_name not in cache_smiles_by_normalized_name:
+            _bump_counter(stats, "molecule_lookup_cache_misses")
+            continue
+
+        _bump_counter(stats, "molecule_lookup_cache_hits")
+        cached_smiles = cache_smiles_by_normalized_name[normalized_name]
+        if _is_missing_scalar(cached_smiles):
+            applied_df.at[row.Index, "smiles"] = pd.NA
+            _bump_counter(stats, "molecule_lookup_cache_hits_without_smiles")
+        else:
+            applied_df.at[row.Index, "smiles"] = str(cached_smiles)
+            _bump_counter(stats, "molecule_lookup_cache_hits_with_smiles")
+
+    return applied_df
+
+
+def _merge_molecule_lookup_with_existing_cache(
+    existing_cache_df: pd.DataFrame,
+    current_lookup_df: pd.DataFrame,
+    stats: Optional[dict[str, int]] = None,
+) -> pd.DataFrame:
+    """Merge current lookup rows into an existing cache while preserving unseen cached names."""
+    merged_by_normalized_name: dict[str, dict[str, Any]] = {}
+
+    for row in existing_cache_df.itertuples(index=False):
+        substrate_or_product_name = _clean_scalar_text(row.substrate_or_product_name)
+        if substrate_or_product_name is None:
+            continue
+
+        normalized_name = _normalize_compound_name(substrate_or_product_name)
+        merged_by_normalized_name[normalized_name] = {
+            "substrate_or_product_name": substrate_or_product_name,
+            "inchi": pd.NA if _is_missing_scalar(row.inchi) else row.inchi,
+            "chebi": pd.NA if _is_missing_scalar(row.chebi) else row.chebi,
+            "smiles": pd.NA if _is_missing_scalar(row.smiles) else row.smiles,
+        }
+
+    for row in current_lookup_df.itertuples(index=False):
+        substrate_or_product_name = _clean_scalar_text(row.substrate_or_product_name)
+        if substrate_or_product_name is None:
+            continue
+
+        normalized_name = _normalize_compound_name(substrate_or_product_name)
+        current_entry = {
+            "substrate_or_product_name": substrate_or_product_name,
+            "inchi": pd.NA if _is_missing_scalar(row.inchi) else row.inchi,
+            "chebi": pd.NA if _is_missing_scalar(row.chebi) else row.chebi,
+            "smiles": pd.NA if _is_missing_scalar(row.smiles) else row.smiles,
+        }
+
+        existing_entry = merged_by_normalized_name.get(normalized_name)
+        if existing_entry is None:
+            merged_by_normalized_name[normalized_name] = current_entry
+            _bump_counter(stats, "molecule_lookup_cache_rows_added")
+            continue
+
+        merged_entry = {
+            "substrate_or_product_name": current_entry["substrate_or_product_name"],
+            "inchi": (
+                current_entry["inchi"]
+                if not _is_missing_scalar(current_entry["inchi"])
+                else existing_entry["inchi"]
+            ),
+            "chebi": (
+                current_entry["chebi"]
+                if not _is_missing_scalar(current_entry["chebi"])
+                else existing_entry["chebi"]
+            ),
+            "smiles": (
+                current_entry["smiles"]
+                if not _is_missing_scalar(current_entry["smiles"])
+                else existing_entry["smiles"]
+            ),
+        }
+        merged_by_normalized_name[normalized_name] = merged_entry
+        _bump_counter(stats, "molecule_lookup_cache_rows_updated")
+
+        if _is_missing_scalar(current_entry["smiles"]) and not _is_missing_scalar(existing_entry["smiles"]):
+            _bump_counter(stats, "molecule_lookup_cache_smiles_preserved_from_existing")
+        elif not _is_missing_scalar(current_entry["smiles"]) and _is_missing_scalar(existing_entry["smiles"]):
+            _bump_counter(stats, "molecule_lookup_cache_smiles_newly_populated")
+
+    merged_rows = sorted(
+        merged_by_normalized_name.values(),
+        key=lambda row: _normalize_compound_name(str(row["substrate_or_product_name"])),
+    )
+    merged_df = pd.DataFrame(merged_rows, columns=list(_MOLECULE_LOOKUP_COLUMNS)).reset_index(drop=True)
+    _bump_counter(stats, "molecule_lookup_cache_rows_after_merge", len(merged_df.index))
+    return merged_df
 
 
 def _normalize_chebi_identifier(chebi_value: Any) -> Optional[str]:
@@ -839,14 +1081,14 @@ def _resolve_smiles_from_name_and_inchi(
     return None
 
 
-def _enrich_ligand_lookup_with_smiles(
-    ligand_lookup_df: pd.DataFrame,
+def _enrich_molecule_lookup_with_smiles(
+    molecule_lookup_df: pd.DataFrame,
     stats: Optional[dict[str, int]] = None,
 ) -> pd.DataFrame:
     """Populate lookup smiles with ChEBI-first and MoleculeResolver fallback logic."""
-    if ligand_lookup_df.empty:
+    if molecule_lookup_df.empty:
         _bump_counter(stats, "smiles_resolution_rows_total", 0)
-        return ligand_lookup_df.copy()
+        return molecule_lookup_df.copy()
 
     try:
         chebi_module = importlib.import_module("bioservices")
@@ -857,7 +1099,7 @@ def _enrich_ligand_lookup_with_smiles(
             "Install dependencies in the kcatbench environment."
         ) from exc
 
-    enriched_df = ligand_lookup_df.copy()
+    enriched_df = molecule_lookup_df.copy()
     _bump_counter(stats, "smiles_resolution_rows_total", len(enriched_df.index))
     chebi_service = ChEBI(verbose=False)
 
@@ -892,7 +1134,7 @@ def _enrich_ligand_lookup_with_smiles(
                 "Install dependencies in the kcatbench environment."
             ) from exc
 
-        chemeo_api_key = load_chemeo_api_key(required=True)
+        chemeo_api_key = _load_chemeo_api_key(required=True)
         with MoleculeResolver(available_service_API_keys={"chemeo": chemeo_api_key}) as molecule_resolver:
             for row_index in unresolved_indices:
                 row = enriched_df.loc[row_index]
@@ -916,14 +1158,14 @@ def _enrich_ligand_lookup_with_smiles(
     return enriched_df
 
 
-def _build_ligand_smiles_maps(
-    ligand_lookup_df: pd.DataFrame,
+def _build_molecule_smiles_maps(
+    molecule_lookup_df: pd.DataFrame,
 ) -> tuple[dict[str, Optional[str]], dict[str, Optional[str]]]:
     """Build exact and normalized name-to-smiles maps from lookup rows."""
     exact_map: dict[str, Optional[str]] = {}
     normalized_map: dict[str, Optional[str]] = {}
 
-    for row in ligand_lookup_df.itertuples(index=False):
+    for row in molecule_lookup_df.itertuples(index=False):
         name = _clean_scalar_text(row.substrate_or_product_name)
         if name is None:
             continue
@@ -972,14 +1214,14 @@ def _map_names_to_smiles(
     return smiles_values
 
 
-def _apply_ligand_lookup_smiles_to_dataset(
+def _apply_molecule_lookup_smiles_to_dataset(
     df: pd.DataFrame,
-    ligand_lookup_df: pd.DataFrame,
+    molecule_lookup_df: pd.DataFrame,
     stats: Optional[dict[str, int]] = None,
 ) -> pd.DataFrame:
     """Replace substrates/products with SMILES and preserve names in *_names columns."""
     transformed_df = df.copy()
-    exact_map, normalized_map = _build_ligand_smiles_maps(ligand_lookup_df)
+    exact_map, normalized_map = _build_molecule_smiles_maps(molecule_lookup_df)
 
     transformed_df["substrates_names"] = transformed_df["substrates"].apply(
         lambda values: list(values) if isinstance(values, list) else []
@@ -1901,6 +2143,154 @@ def _write_brenda_artifacts(df: pd.DataFrame, target_dir: Path, output_basename:
     return csv_path, pkl_path
 
 
+def _resolve_filter_input_path(target_dir: Path, input_path: str | Path) -> Path:
+    """Resolve and validate the filter input path for a prepared BRENDA dataset."""
+    candidate = Path(input_path)
+    if not candidate.is_absolute():
+        if candidate.is_file():
+            candidate = candidate.resolve()
+        else:
+            candidate = (target_dir / candidate).resolve()
+
+    if not candidate.is_file():
+        raise FileNotFoundError(f"BRENDA filter input file was not found at: {candidate}")
+    return candidate
+
+
+def _load_brenda_filter_input_dataframe(
+    target_dir: Path,
+    *,
+    input_path: str | Path | None,
+    input_df: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Load BRENDA filter input from exactly one source and return a copy."""
+    if (input_path is None) == (input_df is None):
+        raise ValueError("Provide exactly one of input_path or input_df.")
+
+    if input_df is not None:
+        if not isinstance(input_df, pd.DataFrame):
+            raise TypeError("input_df must be a pandas DataFrame when provided.")
+        return input_df.copy()
+
+    assert input_path is not None
+    resolved_path = _resolve_filter_input_path(target_dir, input_path)
+    suffix = resolved_path.suffix.lower()
+    if suffix == ".csv":
+        return read_csv_with_schema(resolved_path).copy()
+    if suffix in {".pkl", ".pickle"}:
+        return pd.read_pickle(resolved_path).copy()
+
+    raise ValueError("input_path must point to a .csv, .pkl, or .pickle file.")
+
+
+def _is_present_scalar(value: Any) -> bool:
+    """Return True for non-missing scalars and non-empty strings."""
+    if _is_missing_scalar(value):
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    return True
+
+
+def _target_substrate_present_in_names(row: pd.Series) -> bool:
+    """Return True if kcat target substrate appears in substrates_names."""
+    target_value = row.get("kcat_substrate_name")
+    if not _is_present_scalar(target_value):
+        return False
+
+    substrate_names = row.get("substrates_names")
+    if not isinstance(substrate_names, list) or not substrate_names:
+        return False
+
+    normalized_target = _normalize_compound_name(str(target_value))
+    normalized_substrates = [
+        _normalize_compound_name(str(item))
+        for item in substrate_names
+        if _is_present_scalar(item)
+    ]
+    return normalized_target in normalized_substrates
+
+
+def _first_substrate_smiles_present(values: Any) -> bool:
+    """Return True when the first substrate item exists and is non-missing."""
+    if not isinstance(values, list) or not values:
+        return False
+    return not _is_missing_scalar(values[0])
+
+
+def _drop_missing_list_items(values: Any) -> list[Any]:
+    """Drop None/NaN items from a list while preserving order."""
+    if not isinstance(values, list):
+        return []
+    return [item for item in values if not _is_missing_scalar(item)]
+
+
+def brenda_filter_db(
+    path: Path = (DATA_DIR / _DEFAULT_BRENDA_SUBDIR),
+    input_path: str | Path | None = None,
+    input_df: Optional[pd.DataFrame] = None,
+    output_basename: str = _DEFAULT_FILTERED_BASENAME,
+) -> tuple[Path, Path]:
+    """Filter a built BRENDA dataset and write brenda_filtered CSV/PKL artifacts.
+
+    Exactly one input source must be provided:
+    - input_path: CSV or PKL/PICKLE file path
+    - input_df: in-memory DataFrame
+
+    Filtering steps:
+    1. Work on a copy of the input DataFrame.
+    2. Keep rows with non-missing sequence.
+    3. Keep rows with non-missing experimental_kcat.
+    4. Keep rows where kcat_substrate_name appears in substrates_names.
+    5. Keep rows where the first substrates item is not None/NaN.
+    6. Remove None/NaN values from substrates and products lists only.
+
+    Args:
+        path: BRENDA data directory under DATA_DIR where outputs are written.
+        input_path: Optional input path to an existing BRENDA CSV/PKL dataset.
+        input_df: Optional in-memory DataFrame source.
+        output_basename: Output file basename for filtered artifacts.
+
+    Returns:
+        Tuple of (csv_path, pkl_path) for written filtered artifacts.
+    """
+    target_dir = Path(path)
+    ensure_data_subfolder(target_dir)
+
+    df = _load_brenda_filter_input_dataframe(
+        target_dir,
+        input_path=input_path,
+        input_df=input_df,
+    )
+
+    required_columns = {
+        "sequence",
+        "experimental_kcat",
+        "kcat_substrate_name",
+        "substrates_names",
+        "products_names",
+        "substrates",
+        "products",
+        "references",
+    }
+    missing_columns = sorted(required_columns.difference(df.columns))
+    if missing_columns:
+        missing = ", ".join(missing_columns)
+        raise ValueError(f"Missing required columns for brenda_filter_db: {missing}")
+
+    filtered_df = df.copy()
+    filtered_df = filtered_df[filtered_df["sequence"].apply(_is_present_scalar)].copy()
+    filtered_df = filtered_df[filtered_df["experimental_kcat"].apply(_is_present_scalar)].copy()
+    filtered_df = filtered_df[filtered_df.apply(_target_substrate_present_in_names, axis=1)].copy()
+    filtered_df = filtered_df[filtered_df["substrates"].apply(_first_substrate_smiles_present)].copy()
+
+    filtered_df["substrates"] = filtered_df["substrates"].apply(_drop_missing_list_items)
+    filtered_df["products"] = filtered_df["products"].apply(_drop_missing_list_items)
+    filtered_df = filtered_df.reset_index(drop=True)
+
+    return _write_brenda_artifacts(filtered_df, target_dir, output_basename)
+
+
 def brenda_build_db(
     path: Path = (DATA_DIR / _DEFAULT_BRENDA_SUBDIR),
     flatfile_path: str | Path | None = None,
@@ -1910,10 +2300,12 @@ def brenda_build_db(
     sequence_cache_path: str | Path | None = None,
     sequence_request_timeout_seconds: float = 20.0,
     sequence_request_retries: int = 2,
-    build_ligand_lookup: bool = True,
-    resolve_ligand_smiles: bool = True,
-    ligand_info_path: str | Path | None = None,
-    ligand_lookup_cache_path: str | Path | None = None,
+    build_molecule_lookup: bool = True,
+    resolve_molecule_smiles: bool = True,
+    molecule_info_path: str | Path | None = None,
+    molecule_lookup_cache_path: str | Path | None = None,
+    canonicalize_existing_cache_smiles: bool = False,
+    rebuild_molecule_cache: bool = False,
     write_artifacts: bool = True,
     enable_logging: bool = False,
     log_every_n_records: int = 0,
@@ -1932,15 +2324,20 @@ def brenda_build_db(
             paths are resolved against `path`.
         sequence_request_timeout_seconds: Timeout used for UniProt REST lookups.
         sequence_request_retries: Retry count for retryable UniProt request errors.
-        build_ligand_lookup: Whether to create the substrate/product ligand lookup
+        build_molecule_lookup: Whether to create the substrate/product molecule lookup
             DataFrame and write its JSON cache artifact.
-        resolve_ligand_smiles: Whether to populate ligand lookup SMILES using
+        resolve_molecule_smiles: Whether to populate molecule lookup SMILES using
             ChEBI-first and MoleculeResolver fallback and then replace dataset
             substrates/products with SMILES lists.
-        ligand_info_path: Optional path to the BRENDA ligand info table. If omitted,
+        molecule_info_path: Optional path to the BRENDA molecule info table. If omitted,
             defaults to `brenda_ligand_info.csv` in `path`.
-        ligand_lookup_cache_path: Optional path to the ligand lookup JSON cache.
+        molecule_lookup_cache_path: Optional path to the molecule lookup JSON cache.
             Relative paths are resolved against `path`.
+        canonicalize_existing_cache_smiles: Whether to recanonicalize cached
+            non-empty SMILES values before cache reuse. This does not trigger
+            external re-resolution for cache-hit names.
+        rebuild_molecule_cache: Whether to ignore existing molecule cache
+            content and force a full lookup enrichment rebuild.
         write_artifacts: Whether to write CSV and PKL artifacts.
         enable_logging: Whether to emit structured info-level counter logs.
         log_every_n_records: Interval for structured progress logs while parsing.
@@ -1958,21 +2355,21 @@ def brenda_build_db(
         raise ValueError("sequence_request_timeout_seconds must be greater than 0.")
     if sequence_request_retries < 0:
         raise ValueError("sequence_request_retries must be non-negative.")
-    if resolve_ligand_smiles and not build_ligand_lookup:
-        raise ValueError("resolve_ligand_smiles requires build_ligand_lookup=True.")
+    if resolve_molecule_smiles and not build_molecule_lookup:
+        raise ValueError("resolve_molecule_smiles requires build_molecule_lookup=True.")
 
     stats: dict[str, int] = defaultdict(int)
 
     resolved_flatfile = _resolve_flatfile_path(target_dir, flatfile_path)
     resolved_sequence_cache_path = _resolve_sequence_cache_path(target_dir, sequence_cache_path)
 
-    resolved_ligand_info_path: Optional[Path] = None
-    resolved_ligand_lookup_cache_path: Optional[Path] = None
-    if build_ligand_lookup:
-        resolved_ligand_info_path = _resolve_ligand_info_path(target_dir, ligand_info_path)
-        resolved_ligand_lookup_cache_path = _resolve_ligand_lookup_cache_path(
+    resolved_molecule_info_path: Optional[Path] = None
+    resolved_molecule_lookup_cache_path: Optional[Path] = None
+    if build_molecule_lookup:
+        resolved_molecule_info_path = _resolve_molecule_info_path(target_dir, molecule_info_path)
+        resolved_molecule_lookup_cache_path = _resolve_molecule_lookup_cache_path(
             target_dir,
-            ligand_lookup_cache_path,
+            molecule_lookup_cache_path,
         )
 
     _log_counter_event(
@@ -1985,12 +2382,14 @@ def brenda_build_db(
         sequence_cache_path=str(resolved_sequence_cache_path),
         sequence_request_timeout_seconds=sequence_request_timeout_seconds,
         sequence_request_retries=sequence_request_retries,
-        build_ligand_lookup=build_ligand_lookup,
-        resolve_ligand_smiles=resolve_ligand_smiles,
-        ligand_info_path=str(resolved_ligand_info_path) if resolved_ligand_info_path else None,
-        ligand_lookup_cache_path=(
-            str(resolved_ligand_lookup_cache_path) if resolved_ligand_lookup_cache_path else None
+        build_molecule_lookup=build_molecule_lookup,
+        resolve_molecule_smiles=resolve_molecule_smiles,
+        molecule_info_path=str(resolved_molecule_info_path) if resolved_molecule_info_path else None,
+        molecule_lookup_cache_path=(
+            str(resolved_molecule_lookup_cache_path) if resolved_molecule_lookup_cache_path else None
         ),
+        canonicalize_existing_cache_smiles=canonicalize_existing_cache_smiles,
+        rebuild_molecule_cache=rebuild_molecule_cache,
         write_artifacts=write_artifacts,
         log_every_n_records=log_every_n_records,
     )
@@ -2032,36 +2431,71 @@ def brenda_build_db(
         stats=stats,
     )
 
-    ligand_lookup_df = pd.DataFrame(columns=list(_LIGAND_LOOKUP_COLUMNS))
-    if build_ligand_lookup:
-        assert resolved_ligand_info_path is not None
-        assert resolved_ligand_lookup_cache_path is not None
-        ligand_info_df = _load_brenda_ligand_info(resolved_ligand_info_path, stats=stats)
-        ligand_lookup_df = _build_ligand_lookup_dataframe(df, ligand_info_df, stats=stats)
-        if resolve_ligand_smiles:
-            ligand_lookup_df = _enrich_ligand_lookup_with_smiles(ligand_lookup_df, stats=stats)
+    molecule_lookup_df = pd.DataFrame(columns=list(_MOLECULE_LOOKUP_COLUMNS))
+    if build_molecule_lookup:
+        assert resolved_molecule_info_path is not None
+        assert resolved_molecule_lookup_cache_path is not None
+
+        if rebuild_molecule_cache:
+            _bump_counter(stats, "molecule_lookup_cache_mode_rebuild")
+        else:
+            _bump_counter(stats, "molecule_lookup_cache_mode_reuse")
+            if canonicalize_existing_cache_smiles:
+                _bump_counter(stats, "molecule_lookup_cache_canonicalize_existing_enabled")
+
+        cached_molecule_lookup_df = pd.DataFrame(columns=list(_MOLECULE_LOOKUP_COLUMNS))
+        if not rebuild_molecule_cache:
+            cached_molecule_lookup_df = _load_molecule_lookup_cache(
+                resolved_molecule_lookup_cache_path,
+                canonicalize_cached_smiles=canonicalize_existing_cache_smiles,
+                stats=stats,
+            )
+
+        molecule_info_df = _load_brenda_molecule_info(resolved_molecule_info_path, stats=stats)
+        molecule_lookup_df = _build_molecule_lookup_dataframe(df, molecule_info_df, stats=stats)
+
+        if not rebuild_molecule_cache:
+            molecule_lookup_df = _apply_cached_smiles_to_molecule_lookup(
+                molecule_lookup_df,
+                cached_molecule_lookup_df,
+                stats=stats,
+            )
+
+        if resolve_molecule_smiles:
+            unresolved_smiles_mask = molecule_lookup_df["smiles"].apply(_is_missing_scalar)
+            unresolved_rows = int(unresolved_smiles_mask.sum())
+            _bump_counter(stats, "smiles_resolution_rows_selected_for_enrichment", unresolved_rows)
+            _bump_counter(
+                stats,
+                "smiles_resolution_rows_skipped_cache_hits",
+                int(len(molecule_lookup_df.index) - unresolved_rows),
+            )
+
+            if unresolved_rows > 0:
+                unresolved_lookup_df = molecule_lookup_df.loc[unresolved_smiles_mask].reset_index(drop=True)
+                enriched_unresolved_df = _enrich_molecule_lookup_with_smiles(unresolved_lookup_df, stats=stats)
+                molecule_lookup_df.loc[unresolved_smiles_mask, "smiles"] = enriched_unresolved_df["smiles"].tolist()
+            else:
+                _bump_counter(stats, "smiles_resolution_skipped_all_cache_hits")
         else:
             _bump_counter(stats, "smiles_resolution_skipped_disabled")
 
-        _write_ligand_lookup_cache(resolved_ligand_lookup_cache_path, ligand_lookup_df, stats=stats)
-        df.attrs["ligand_lookup_cache_path"] = str(resolved_ligand_lookup_cache_path)
-        df.attrs["ligand_lookup_rows"] = int(len(ligand_lookup_df.index))
-        df.attrs["ligand_lookup_smiles_resolved"] = int(
-            (~ligand_lookup_df["smiles"].apply(_is_missing_scalar)).sum()
-        )
-        df.attrs["ligand_lookup_df"] = ligand_lookup_df
+        cache_df_to_write = molecule_lookup_df
+        if not rebuild_molecule_cache:
+            cache_df_to_write = _merge_molecule_lookup_with_existing_cache(
+                cached_molecule_lookup_df,
+                molecule_lookup_df,
+                stats=stats,
+            )
+        _write_molecule_lookup_cache(resolved_molecule_lookup_cache_path, cache_df_to_write, stats=stats)
 
-    if resolve_ligand_smiles:
-        df = _apply_ligand_lookup_smiles_to_dataset(df, ligand_lookup_df, stats=stats)
-        df.attrs["smiles_dataset_transformed"] = True
+    if resolve_molecule_smiles:
+        df = _apply_molecule_lookup_smiles_to_dataset(df, molecule_lookup_df, stats=stats)
     else:
         _bump_counter(stats, "smiles_dataset_transform_skipped_disabled")
-        df.attrs["smiles_dataset_transformed"] = False
 
     if write_artifacts:
-        csv_path, pkl_path = _write_brenda_artifacts(df, target_dir, output_basename)
-        df.attrs["csv_path"] = str(csv_path)
-        df.attrs["pkl_path"] = str(pkl_path)
+        _write_brenda_artifacts(df, target_dir, output_basename)
 
     summary_stats = {key: int(value) for key, value in sorted(stats.items())}
     _log_counter_event(

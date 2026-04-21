@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Literal
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -40,6 +40,19 @@ def _validate_columns_exist(df: pd.DataFrame, columns: Sequence[str], context: s
 	if missing_columns:
 		missing = ", ".join(sorted(missing_columns))
 		raise ValueError(f"Missing {context} column(s): {missing}")
+
+
+def _make_hashable_key_value(value: Any) -> Any:
+	"""Convert list-like key values into hashable objects for internal grouping only."""
+	if isinstance(value, list):
+		return tuple(_make_hashable_key_value(item) for item in value)
+	if isinstance(value, tuple):
+		return tuple(_make_hashable_key_value(item) for item in value)
+	if isinstance(value, dict):
+		return tuple(
+			sorted((str(key), _make_hashable_key_value(val)) for key, val in value.items())
+		)
+	return value
 
 
 def aggregate_rows_by_columns(
@@ -118,6 +131,20 @@ def aggregate_rows_by_columns(
 	working_df = df.copy()
 	working_df["__original_order"] = np.arange(len(working_df))
 
+	group_key_columns: list[str] = []
+	existing_columns = set(working_df.columns)
+	for index, key_column in enumerate(key_columns):
+		base_group_key_column = f"__group_key_{index}"
+		group_key_column = base_group_key_column
+		suffix = 1
+		while group_key_column in existing_columns:
+			group_key_column = f"{base_group_key_column}_{suffix}"
+			suffix += 1
+
+		group_key_columns.append(group_key_column)
+		existing_columns.add(group_key_column)
+		working_df[group_key_column] = working_df[key_column].map(_make_hashable_key_value)
+
 	key_complete_mask = working_df[key_columns].notna().all(axis=1)
 	grouped_source_df = working_df.loc[key_complete_mask]
 	passthrough_df = working_df.loc[~key_complete_mask].copy()
@@ -125,8 +152,8 @@ def aggregate_rows_by_columns(
 	if grouped_source_df.empty:
 		result_df = passthrough_df
 	else:
-		grouped = grouped_source_df.groupby(key_columns, sort=False, dropna=False)
-		grouped_first_rows = grouped.head(1).copy().set_index(list(key_columns))
+		grouped = grouped_source_df.groupby(group_key_columns, sort=False, dropna=False)
+		grouped_first_rows = grouped.head(1).copy().set_index(group_key_columns)
 
 		for column_name, strategy in strategies.items():
 			if strategy == "geometric_mean":
@@ -136,9 +163,9 @@ def aggregate_rows_by_columns(
 			else:
 				grouped_first_rows[column_name] = grouped[column_name].agg(strategy)
 
-		grouped_result_df = grouped_first_rows.reset_index()
+		grouped_result_df = grouped_first_rows.reset_index(drop=True)
 		result_df = pd.concat([grouped_result_df, passthrough_df], ignore_index=True)
 
 	result_df = result_df.sort_values("__original_order", kind="stable")
-	result_df = result_df.drop(columns=["__original_order"])
+	result_df = result_df.drop(columns=["__original_order", *group_key_columns])
 	return result_df.reset_index(drop=True)
