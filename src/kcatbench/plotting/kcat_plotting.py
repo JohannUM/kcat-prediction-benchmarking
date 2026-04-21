@@ -480,7 +480,7 @@ def get_performance_subsets(
     exp_mask = (df['experimental_kcat'] > 0) & df['experimental_kcat'].notna()
 
     for model in models:
-        mod_col = f"{model}_kcat"
+        mod_col = model
 
         if mod_col not in df.columns:
             logger.error(f"Column {mod_col} not found in DataFrame. Skipping model {model}.")
