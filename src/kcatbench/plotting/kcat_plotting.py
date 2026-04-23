@@ -80,6 +80,296 @@ def _compute_comparison_metrics(
     return metrics
 
 
+def _extract_scalar(value):
+    """Extract scalar from list-like values used in prediction columns."""
+    if isinstance(value, (list, np.ndarray, tuple)):
+        if len(value) == 0:
+            return np.nan
+        return value[0]
+    return value
+
+
+def _resolve_model_column(model_name: str) -> str:
+    """Resolve model identifier to dataframe column name."""
+    if model_name.endswith('_kcat'):
+        return model_name
+    return f"{model_name}_kcat"
+
+
+def plot_r2_comparison_across_datasets(
+    datasets: list[pd.DataFrame],
+    dataset_names: list[str],
+    model_names: dict[str, str],
+    log_scale: bool = True,
+    clamp_r2_to_unit_interval: bool = False,
+    plot_type: str = 'dot',
+    save: bool = False,
+    show: bool = True
+) -> None:
+    """
+    Plot model-wise R² values across multiple datasets.
+
+    The function computes R² between each model prediction column and
+    `experimental_kcat` for every dataset, then renders a grouped dot plot
+    with models on the x-axis and R² on the y-axis.
+
+    Parameters
+    ----------
+    datasets : list[pd.DataFrame]
+        List of input datasets. Each dataframe must include
+        `experimental_kcat` and model prediction columns with pattern
+        `{model_name}_kcat`.
+    dataset_names : list[str]
+        Display names for datasets shown in legend. Must match `datasets` length.
+    model_names : dict[str, str]
+        Mapping from model identifier to display name. Model identifiers are
+        resolved to columns using `{model_name}_kcat`, unless they already end
+        with `_kcat`.
+    log_scale : bool, default True
+        If True, computes R² in log10 space after filtering positive values.
+        If False, computes R² on raw values.
+    clamp_r2_to_unit_interval : bool, default False
+        If True, clips plotted R² values to [0, 1].
+        If False, plots true R² values (including negatives).
+    plot_type : str, default 'dot'
+        Plot style for R² values. Must be one of: 'dot', 'bar'.
+        In bar mode, values are rendered as thin grouped bars per model.
+    save : bool, default False
+        If True, saves figure under results/plots/r2_comparison_plots.
+    show : bool, default True
+        If True, displays the figure; otherwise closes it.
+
+    Returns
+    -------
+    None
+        The function renders the plot and optionally saves it.
+
+    Raises
+    ------
+    ValueError
+        If required columns are missing, overlap is insufficient for any
+        model-dataset pair, or input arguments are invalid.
+    """
+    if len(datasets) == 0:
+        raise ValueError("datasets must contain at least one dataframe.")
+
+    if len(dataset_names) != len(datasets):
+        raise ValueError(
+            "dataset_names must have the same length as datasets. "
+            f"Received {len(dataset_names)} names for {len(datasets)} datasets."
+        )
+
+    if len(set(dataset_names)) != len(dataset_names):
+        raise ValueError("dataset_names must be unique for an unambiguous legend.")
+
+    if len(model_names) == 0:
+        raise ValueError("model_names must contain at least one model mapping.")
+
+    if not isinstance(plot_type, str):
+        raise ValueError(
+            f"plot_type must be a string ('dot' or 'bar'), got {type(plot_type).__name__}."
+        )
+    plot_type = plot_type.strip().lower()
+    if plot_type not in {'dot', 'bar'}:
+        raise ValueError(
+            f"Unsupported plot_type '{plot_type}'. Expected one of: 'dot', 'bar'."
+        )
+
+    for dataset_idx, dataset in enumerate(datasets):
+        if not isinstance(dataset, pd.DataFrame):
+            raise ValueError(
+                "All entries in datasets must be pandas DataFrames. "
+                f"Entry at index {dataset_idx} is {type(dataset).__name__}."
+            )
+
+    resolved_columns = {model_key: _resolve_model_column(model_key) for model_key in model_names}
+    first_dataset_name = dataset_names[0]
+    r2_by_dataset: dict[str, dict[str, float]] = {}
+
+    for dataset_name, dataset in zip(dataset_names, datasets):
+        if 'experimental_kcat' not in dataset.columns:
+            raise ValueError(
+                f"Dataset '{dataset_name}' is missing required column 'experimental_kcat'."
+            )
+
+        r2_by_dataset[dataset_name] = {}
+
+        for model_key, model_col in resolved_columns.items():
+            if model_col not in dataset.columns:
+                raise ValueError(
+                    f"Dataset '{dataset_name}' is missing required model column '{model_col}'."
+                )
+
+            pair_df = dataset[['experimental_kcat', model_col]].copy()
+            pair_df['experimental_kcat'] = pair_df['experimental_kcat'].apply(_extract_scalar)
+            pair_df[model_col] = pair_df[model_col].apply(_extract_scalar)
+
+            pair_df['experimental_kcat'] = pd.to_numeric(pair_df['experimental_kcat'], errors='coerce')
+            pair_df[model_col] = pd.to_numeric(pair_df[model_col], errors='coerce')
+            pair_df = pair_df.dropna()
+            pair_df = pair_df[~pair_df.isin([np.inf, -np.inf]).any(axis=1)]
+
+            if log_scale:
+                pair_df = pair_df[
+                    (pair_df['experimental_kcat'] > 0)
+                    & (pair_df[model_col] > 0)
+                ]
+
+            if len(pair_df) < 2:
+                raise ValueError(
+                    "Insufficient overlapping data for R² computation: "
+                    f"dataset='{dataset_name}', model='{model_col}', "
+                    f"valid_points={len(pair_df)}. At least 2 points are required."
+                )
+
+            y_true = pair_df['experimental_kcat'].to_numpy(dtype=float)
+            y_pred = pair_df[model_col].to_numpy(dtype=float)
+            if log_scale:
+                y_true = np.log10(y_true)
+                y_pred = np.log10(y_pred)
+
+            r2_value = float(r2_score(y_true, y_pred))
+            r2_by_dataset[dataset_name][model_key] = r2_value
+
+    ordered_model_keys = sorted(
+        model_names.keys(),
+        key=lambda model_key: (
+            -r2_by_dataset[first_dataset_name][model_key],
+            model_names[model_key]
+        )
+    )
+
+    n_models = len(ordered_model_keys)
+    n_datasets = len(dataset_names)
+    fig_width = max(10, 1.3 * n_models + 2)
+    fig, ax = plt.subplots(figsize=(fig_width, 6))
+    sns.set_style("ticks")
+
+    inter_group_spacing = 0.15
+    if plot_type == 'bar':
+        intra_group_total_width = min(0.2, 0.02 * max(n_datasets, 1))
+    else:
+        intra_group_total_width = min(0.6, 0.1 * max(n_datasets - 1, 1))
+
+    if n_datasets == 1:
+        dataset_offsets = np.array([0.0])
+    else:
+        dataset_offsets = np.linspace(
+            -intra_group_total_width / 2,
+            intra_group_total_width / 2,
+            n_datasets
+        )
+    model_centers = np.arange(n_models, dtype=float) * inter_group_spacing
+
+    palette = sns.color_palette("deep", n_colors=n_datasets)
+
+    all_r2_values = []
+    for dataset_idx, dataset_name in enumerate(dataset_names):
+        x_positions = model_centers + dataset_offsets[dataset_idx]
+        y_values = [r2_by_dataset[dataset_name][model_key] for model_key in ordered_model_keys]
+        if clamp_r2_to_unit_interval:
+            y_values = list(np.clip(y_values, 0.0, 1.0))
+
+        all_r2_values.extend(y_values)
+        if plot_type == 'dot':
+            ax.scatter(
+                x_positions,
+                y_values,
+                s=65,
+                color=palette[dataset_idx],
+                edgecolor='black',
+                linewidth=0.3,
+                label=dataset_name,
+                zorder=3
+            )
+        else:
+            bar_width = min(
+                0.15,
+                max(0.03, (intra_group_total_width / max(n_datasets, 1)) * 0.9)
+            )
+            ax.bar(
+                x_positions,
+                y_values,
+                width=bar_width,
+                bottom=0.0,
+                color=palette[dataset_idx],
+                edgecolor='black',
+                linewidth=0.3,
+                label=dataset_name,
+                zorder=3
+            )
+
+    if len(all_r2_values) == 0:
+        raise ValueError("No R² values were computed for plotting.")
+
+    y_min = min(all_r2_values)
+    y_max = max(all_r2_values)
+
+    if plot_type == 'bar':
+        has_negative_r2 = y_min < 0.0
+        if has_negative_r2:
+            y_span = y_max - y_min
+            y_pad = 0.05 if np.isclose(y_span, 0.0) else y_span * 0.02
+            lower_limit = y_min - y_pad
+            upper_limit = max(y_max + y_pad, 0.05)
+        else:
+            y_pad = 0.05 if np.isclose(y_max, 0.0) else abs(y_max) * 0.02
+            lower_limit = 0.0
+            upper_limit = y_max + y_pad
+
+        if np.isclose(lower_limit, upper_limit):
+            upper_limit = lower_limit + 0.1
+        ax.set_ylim(lower_limit, upper_limit)
+
+        if has_negative_r2:
+            ax.axhline(0.0, linestyle='--', color='gray', linewidth=1.0, alpha=0.8, zorder=1)
+    else:
+        if np.isclose(y_min, y_max):
+            y_pad = 0.05 if np.isclose(y_max, 0.0) else abs(y_max) * 0.1
+        else:
+            y_pad = (y_max - y_min) * 0.1
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    ax.axhline(1.0, linestyle='--', color='gray', linewidth=1.0, alpha=0.7, zorder=1)
+    ax.set_xticks(model_centers)
+    ax.set_xticklabels([model_names[model_key] for model_key in ordered_model_keys], rotation=0, ha='center')
+    ax.set_xlabel("Model", fontsize=13)
+    ax.set_ylabel(r"$R^2$", fontsize=13)
+
+    metric_space_label = "log10" if log_scale else "linear"
+    title_text = f"Model R² across datasets ({metric_space_label} space)"
+    ax.set_title(title_text, fontsize=16, fontweight='bold')
+
+    legend = ax.legend(
+        title="Dataset",
+        frameon=True,
+        fancybox=True,
+        framealpha=0.9,
+        fontsize=11,
+        title_fontsize=11
+    )
+    legend.get_frame().set_edgecolor('0.8')
+
+    sns.despine()
+    plt.tight_layout()
+
+    if save:
+        save_dir = RESULT_DIR / "plots" / "r2_comparison_plots"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        file_suffix = "" if plot_type == 'dot' else f"_{plot_type}"
+        plt.savefig(
+            str(save_dir / f"r2_model_dataset_comparison{file_suffix}.png"),
+            dpi=300,
+            bbox_inches='tight',
+            transparent=False
+        )
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
 def confidence_ellipse(x, y, ax, n_std=3.0, facecolor='none', **kwargs):
     """
     Source: https://matplotlib.org/stable/gallery/statistics/confidence_ellipse.html
