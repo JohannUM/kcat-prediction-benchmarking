@@ -64,3 +64,4 @@ venv/
 
 # Temporary notebooks
 scripts/temp_*.ipynb
+scripts/sync_overleaf_figures.py

@@ -11,6 +11,7 @@ from matplotlib.colors import LinearSegmentedColormap
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from scipy.stats import pearsonr, spearmanr
 from pathlib import Path
+from typing import Optional, Union
 from upsetplot import from_contents, UpSet
 from kcatbench.util import RESULT_DIR
 
@@ -96,6 +97,29 @@ def _resolve_model_column(model_name: str) -> str:
     return f"{model_name}_kcat"
 
 
+def _resolve_save_target(
+    save: bool,
+    save_path: Optional[Union[str, Path]],
+    default_dir: Path,
+    default_filename: str
+) -> Optional[Path]:
+    """Resolve a save target path and ensure the parent directory exists."""
+    if not save:
+        return None
+
+    if save_path is None:
+        target_path = Path(default_dir) / default_filename
+    else:
+        candidate = Path(save_path).expanduser()
+        if candidate.suffix:
+            target_path = candidate
+        else:
+            target_path = candidate / default_filename
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    return target_path
+
+
 def plot_r2_comparison_across_datasets(
     datasets: list[pd.DataFrame],
     dataset_names: list[str],
@@ -104,6 +128,7 @@ def plot_r2_comparison_across_datasets(
     clamp_r2_to_unit_interval: bool = False,
     plot_type: str = 'dot',
     save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
     show: bool = True
 ) -> None:
     """
@@ -136,6 +161,10 @@ def plot_r2_comparison_across_datasets(
         In bar mode, values are rendered as thin grouped bars per model.
     save : bool, default False
         If True, saves figure under results/plots/r2_comparison_plots.
+    save_path : str or Path, optional
+        If provided, overrides the save directory or full file path. If a
+        directory is provided, the default filename is used. If a filename
+        is provided, it is used directly. Ignored when save is False.
     show : bool, default True
         If True, displays the figure; otherwise closes it.
 
@@ -147,8 +176,9 @@ def plot_r2_comparison_across_datasets(
     Raises
     ------
     ValueError
-        If required columns are missing, overlap is insufficient for any
-        model-dataset pair, or input arguments are invalid.
+        If experimental_kcat is missing, overlap is insufficient for any
+        model-dataset pair, or input arguments are invalid. Missing model
+        columns are allowed and are skipped.
     """
     if len(datasets) == 0:
         raise ValueError("datasets must contain at least one dataframe.")
@@ -196,9 +226,13 @@ def plot_r2_comparison_across_datasets(
 
         for model_key, model_col in resolved_columns.items():
             if model_col not in dataset.columns:
-                raise ValueError(
-                    f"Dataset '{dataset_name}' is missing required model column '{model_col}'."
+                logger.warning(
+                    "Dataset '%s' is missing model column '%s'. Skipping.",
+                    dataset_name,
+                    model_col
                 )
+                r2_by_dataset[dataset_name][model_key] = np.nan
+                continue
 
             pair_df = dataset[['experimental_kcat', model_col]].copy()
             pair_df['experimental_kcat'] = pair_df['experimental_kcat'].apply(_extract_scalar)
@@ -231,10 +265,14 @@ def plot_r2_comparison_across_datasets(
             r2_value = float(r2_score(y_true, y_pred))
             r2_by_dataset[dataset_name][model_key] = r2_value
 
+    r2_first_dataset = r2_by_dataset[first_dataset_name]
     ordered_model_keys = sorted(
         model_names.keys(),
         key=lambda model_key: (
-            -r2_by_dataset[first_dataset_name][model_key],
+            not np.isfinite(r2_first_dataset.get(model_key, np.nan)),
+            -r2_first_dataset.get(model_key, np.nan)
+            if np.isfinite(r2_first_dataset.get(model_key, np.nan))
+            else 0.0,
             model_names[model_key]
         )
     )
@@ -249,7 +287,7 @@ def plot_r2_comparison_across_datasets(
     if plot_type == 'bar':
         intra_group_total_width = min(0.2, 0.02 * max(n_datasets, 1))
     else:
-        intra_group_total_width = min(0.6, 0.1 * max(n_datasets - 1, 1))
+        intra_group_total_width = min(0.2, 0.03 * max(n_datasets - 1, 1))
 
     if n_datasets == 1:
         dataset_offsets = np.array([0.0])
@@ -266,15 +304,22 @@ def plot_r2_comparison_across_datasets(
     all_r2_values = []
     for dataset_idx, dataset_name in enumerate(dataset_names):
         x_positions = model_centers + dataset_offsets[dataset_idx]
-        y_values = [r2_by_dataset[dataset_name][model_key] for model_key in ordered_model_keys]
+        y_values = np.array(
+            [r2_by_dataset[dataset_name][model_key] for model_key in ordered_model_keys],
+            dtype=float
+        )
         if clamp_r2_to_unit_interval:
-            y_values = list(np.clip(y_values, 0.0, 1.0))
+            y_values = np.clip(y_values, 0.0, 1.0)
 
-        all_r2_values.extend(y_values)
+        finite_mask = np.isfinite(y_values)
+        if not np.any(finite_mask):
+            continue
+
+        all_r2_values.extend(y_values[finite_mask].tolist())
         if plot_type == 'dot':
             ax.scatter(
-                x_positions,
-                y_values,
+                x_positions[finite_mask],
+                y_values[finite_mask],
                 s=65,
                 color=palette[dataset_idx],
                 edgecolor='black',
@@ -288,8 +333,8 @@ def plot_r2_comparison_across_datasets(
                 max(0.03, (intra_group_total_width / max(n_datasets, 1)) * 0.9)
             )
             ax.bar(
-                x_positions,
-                y_values,
+                x_positions[finite_mask],
+                y_values[finite_mask],
                 width=bar_width,
                 bottom=0.0,
                 color=palette[dataset_idx],
@@ -325,9 +370,9 @@ def plot_r2_comparison_across_datasets(
             ax.axhline(0.0, linestyle='--', color='gray', linewidth=1.0, alpha=0.8, zorder=1)
     else:
         if np.isclose(y_min, y_max):
-            y_pad = 0.05 if np.isclose(y_max, 0.0) else abs(y_max) * 0.1
+            y_pad = 0.05 if np.isclose(y_max, 0.0) else abs(y_max) * 0.05
         else:
-            y_pad = (y_max - y_min) * 0.1
+            y_pad = (y_max - y_min) * 0.02
         ax.set_ylim(y_min - y_pad, y_max + y_pad)
 
     ax.axhline(1.0, linestyle='--', color='gray', linewidth=1.0, alpha=0.7, zorder=1)
@@ -354,15 +399,307 @@ def plot_r2_comparison_across_datasets(
     plt.tight_layout()
 
     if save:
-        save_dir = RESULT_DIR / "plots" / "r2_comparison_plots"
-        save_dir.mkdir(parents=True, exist_ok=True)
         file_suffix = "" if plot_type == 'dot' else f"_{plot_type}"
-        plt.savefig(
-            str(save_dir / f"r2_model_dataset_comparison{file_suffix}.png"),
-            dpi=300,
-            bbox_inches='tight',
-            transparent=False
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "r2_comparison_plots",
+            f"r2_model_dataset_comparison{file_suffix}.png"
         )
+        if save_target is not None:
+            plt.savefig(
+                str(save_target),
+                dpi=300,
+                bbox_inches='tight',
+                transparent=False
+            )
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def plot_metric_heatmap_across_datasets(
+    datasets: list[pd.DataFrame],
+    dataset_names: list[str],
+    model_names: dict[str, str],
+    log_scale: bool = True,
+    save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
+    show: bool = True
+) -> None:
+    """
+    Plot a metric heatmap across datasets and models.
+
+    The function computes R2, Pearson r, SRCC, RMSE, and MAE between each
+    model prediction column and experimental_kcat for every dataset, then
+    renders a heatmap with metric columns grouped by dataset. Missing model
+    columns or NaN metrics are shown as black cells with no annotation.
+
+    Parameters
+    ----------
+    datasets : list[pd.DataFrame]
+        List of input datasets. Each dataframe must include
+        experimental_kcat and model prediction columns with pattern
+        {model_name}_kcat.
+    dataset_names : list[str]
+        Display names for datasets shown above metric groups. Must match
+        datasets length.
+    model_names : dict[str, str]
+        Mapping from model identifier to display name. Model identifiers are
+        resolved to columns using {model_name}_kcat, unless they already end
+        with _kcat.
+    log_scale : bool, default True
+        If True, computes metrics in log10 space after filtering positive values.
+        If False, computes metrics on raw values.
+    save : bool, default False
+        If True, saves figure under results/plots/metric_heatmap_plots.
+    save_path : str or Path, optional
+        If provided, overrides the save directory or full file path. If a
+        directory is provided, the default filename is used. If a filename
+        is provided, it is used directly. Ignored when save is False.
+    show : bool, default True
+        If True, displays the figure; otherwise closes it.
+
+    Returns
+    -------
+    None
+        The function renders the plot and optionally saves it.
+
+    Raises
+    ------
+    ValueError
+        If experimental_kcat is missing or input arguments are invalid. Missing
+        model columns are allowed and rendered as black cells with no annotation.
+    """
+    if len(datasets) == 0:
+        raise ValueError("datasets must contain at least one dataframe.")
+
+    if len(dataset_names) != len(datasets):
+        raise ValueError(
+            "dataset_names must have the same length as datasets. "
+            f"Received {len(dataset_names)} names for {len(datasets)} datasets."
+        )
+
+    if len(set(dataset_names)) != len(dataset_names):
+        raise ValueError("dataset_names must be unique for an unambiguous legend.")
+
+    if len(model_names) == 0:
+        raise ValueError("model_names must contain at least one model mapping.")
+
+    for dataset_idx, dataset in enumerate(datasets):
+        if not isinstance(dataset, pd.DataFrame):
+            raise ValueError(
+                "All entries in datasets must be pandas DataFrames. "
+                f"Entry at index {dataset_idx} is {type(dataset).__name__}."
+            )
+
+    resolved_columns = {model_key: _resolve_model_column(model_key) for model_key in model_names}
+    metrics_by_dataset: dict[str, dict[str, dict[str, float]]] = {}
+
+    for dataset_name, dataset in zip(dataset_names, datasets):
+        if 'experimental_kcat' not in dataset.columns:
+            raise ValueError(
+                f"Dataset '{dataset_name}' is missing required column 'experimental_kcat'."
+            )
+
+        metrics_by_dataset[dataset_name] = {}
+
+        for model_key, model_col in resolved_columns.items():
+            if model_col not in dataset.columns:
+                logger.warning(
+                    "Dataset '%s' is missing model column '%s'. Skipping.",
+                    dataset_name,
+                    model_col
+                )
+                metrics_by_dataset[dataset_name][model_key] = _empty_metrics()
+                continue
+
+            pair_df = dataset[['experimental_kcat', model_col]].copy()
+            pair_df['experimental_kcat'] = pair_df['experimental_kcat'].apply(_extract_scalar)
+            pair_df[model_col] = pair_df[model_col].apply(_extract_scalar)
+
+            pair_df['experimental_kcat'] = pd.to_numeric(pair_df['experimental_kcat'], errors='coerce')
+            pair_df[model_col] = pd.to_numeric(pair_df[model_col], errors='coerce')
+            pair_df = pair_df.dropna()
+            pair_df = pair_df[~pair_df.isin([np.inf, -np.inf]).any(axis=1)]
+
+            if log_scale:
+                pair_df = pair_df[
+                    (pair_df['experimental_kcat'] > 0)
+                    & (pair_df[model_col] > 0)
+                ]
+
+            if len(pair_df) == 0:
+                logger.warning(
+                    "No valid overlap for metrics: dataset='%s', model='%s'.",
+                    dataset_name,
+                    model_col
+                )
+                metrics_by_dataset[dataset_name][model_key] = _empty_metrics()
+                continue
+
+            if len(pair_df) < 2:
+                logger.warning(
+                    "Low sample count for metrics: dataset='%s', model='%s', valid_points=%d.",
+                    dataset_name,
+                    model_col,
+                    len(pair_df)
+                )
+
+            y_true = pair_df['experimental_kcat'].to_numpy(dtype=float)
+            y_pred = pair_df[model_col].to_numpy(dtype=float)
+            if log_scale:
+                y_true = np.log10(y_true)
+                y_pred = np.log10(y_pred)
+
+            metrics_by_dataset[dataset_name][model_key] = _compute_comparison_metrics(
+                y_pred,
+                y_true,
+                include_ground_truth_metrics=True
+            )
+
+    first_dataset_name = dataset_names[0]
+    ordered_model_keys = sorted(
+        model_names.keys(),
+        key=lambda model_key: (
+            not np.isfinite(metrics_by_dataset[first_dataset_name][model_key].get('r2', np.nan)),
+            -metrics_by_dataset[first_dataset_name][model_key].get('r2', np.nan)
+            if np.isfinite(metrics_by_dataset[first_dataset_name][model_key].get('r2', np.nan))
+            else 0.0,
+            model_names[model_key]
+        )
+    )
+
+    metric_keys = ['r2', 'pearson_r', 'srcc', 'rmse', 'mae']
+    metric_labels = [r"$R^2$", "Pearson r", "SRCC", "RMSE", "MAE"]
+    n_metrics = len(metric_keys)
+    n_datasets = len(dataset_names)
+    n_models = len(ordered_model_keys)
+    n_cols = n_metrics * n_datasets
+
+    raw_matrix = np.full((n_models, n_cols), np.nan, dtype=float)
+
+    for dataset_idx, dataset_name in enumerate(dataset_names):
+        for model_idx, model_key in enumerate(ordered_model_keys):
+            metrics = metrics_by_dataset[dataset_name][model_key]
+            for metric_idx, metric_key in enumerate(metric_keys):
+                col_idx = dataset_idx * n_metrics + metric_idx
+                raw_matrix[model_idx, col_idx] = metrics.get(metric_key, np.nan)
+
+    norm_matrix = np.full_like(raw_matrix, np.nan, dtype=float)
+    invert_metrics = {'rmse', 'mae'}
+    for metric_idx, metric_key in enumerate(metric_keys):
+        values = raw_matrix[:, metric_idx::n_metrics]
+        finite_vals = values[np.isfinite(values)]
+
+        if finite_vals.size == 0:
+            normalized = np.full(values.shape, 0.5, dtype=float)
+        else:
+            min_val = np.min(finite_vals)
+            max_val = np.max(finite_vals)
+            if np.isclose(min_val, max_val):
+                normalized = np.full(values.shape, 0.5, dtype=float)
+            else:
+                normalized = (values - min_val) / (max_val - min_val)
+            if metric_key in invert_metrics:
+                normalized = 1.0 - normalized
+
+        normalized = np.where(np.isfinite(values), normalized, np.nan)
+        norm_matrix[:, metric_idx::n_metrics] = normalized
+
+    fig_width = max(10, 0.6 * n_cols + 2)
+    fig_height = max(4.5, 0.35 * n_models + 2)
+    fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+    sns.set_style("ticks")
+
+    cmap = sns.color_palette("rocket", as_cmap=True)
+    cmap.set_bad("black")
+    mask = np.isnan(norm_matrix)
+    sns.heatmap(
+        norm_matrix,
+        ax=ax,
+        cmap=cmap,
+        mask=mask,
+        cbar=False,
+        linewidths=0.5,
+        linecolor='white'
+    )
+
+    xtick_labels = []
+    for _ in dataset_names:
+        xtick_labels.extend(metric_labels)
+
+    ax.set_xticklabels(xtick_labels, rotation=0, ha='center', fontsize=10)
+    ax.set_yticklabels(
+        [model_names[model_key] for model_key in ordered_model_keys],
+        rotation=0,
+        fontsize=11
+    )
+
+    for boundary in range(1, n_datasets):
+        ax.axvline(boundary * n_metrics, color='black', linewidth=1.5)
+
+    for dataset_idx, dataset_name in enumerate(dataset_names):
+        center = (dataset_idx * n_metrics + n_metrics / 2) / n_cols
+        ax.text(
+            center,
+            1.02,
+            dataset_name,
+            transform=ax.transAxes,
+            ha='center',
+            va='bottom',
+            fontsize=11,
+            fontweight='bold'
+        )
+
+    for row_idx in range(n_models):
+        for col_idx in range(n_cols):
+            raw_value = raw_matrix[row_idx, col_idx]
+            if not np.isfinite(raw_value):
+                continue
+            color_value = norm_matrix[row_idx, col_idx]
+            text_color = 'white' if np.isfinite(color_value) and color_value < 0.5 else 'black'
+            ax.text(
+                col_idx + 0.5,
+                row_idx + 0.5,
+                _format_metric(raw_value),
+                ha='center',
+                va='center',
+                fontsize=9,
+                color=text_color
+            )
+
+    ax.set_xlabel("Metrics", fontsize=12)
+    ax.set_ylabel("Model", fontsize=12)
+
+    metric_space_label = "log10" if log_scale else "linear"
+    ax.set_title(
+        f"Model metrics across datasets ({metric_space_label} space)",
+        fontsize=15,
+        fontweight='bold',
+        pad=35
+    )
+
+    sns.despine()
+    plt.tight_layout()
+    fig.subplots_adjust(top=0.86)
+
+    if save:
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "metric_heatmap_plots",
+            f"metric_heatmap_{metric_space_label}.png"
+        )
+        if save_target is not None:
+            plt.savefig(
+                str(save_target),
+                dpi=300,
+                bbox_inches='tight',
+                transparent=False
+            )
 
     if show:
         plt.show()
@@ -431,6 +768,7 @@ def plot_model_comparison(
     gridsize=50, 
     vmax=None, 
     save=False, 
+    save_path: Optional[Union[str, Path]] = None,
     show=True,
     model_vs_model: bool = False,
     show_ellipse_stats: bool = False,
@@ -464,6 +802,10 @@ def plot_model_comparison(
         density colors across multiple plots.
     save : bool, default False
         If True, saves the figure to the project's results directory.
+    save_path : str or Path, optional
+        If provided, overrides the save directory or full file path. If a
+        directory is provided, the default filename is used. If a filename
+        is provided, it is used directly. Ignored when save is False.
     show : bool, default True
         If False, does not show the figure.
     model_vs_model : bool, default False
@@ -706,15 +1048,20 @@ def plot_model_comparison(
     
     plt.tight_layout()
 
-    if save: 
-        save_dir = RESULT_DIR / "plots" / "comparison_plots"
-        save_dir.mkdir(exist_ok=True)
-        plt.savefig(
-            str(save_dir / f"{model_x_name}_vs_{model_y_name}.png"), 
-            dpi=300,             
-            bbox_inches='tight', 
-            transparent=False   
+    if save:
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "comparison_plots",
+            f"{model_x_name}_vs_{model_y_name}.png"
         )
+        if save_target is not None:
+            plt.savefig(
+                str(save_target),
+                dpi=300,
+                bbox_inches='tight',
+                transparent=False
+            )
     if show:
         plt.show()
     else:
@@ -813,6 +1160,7 @@ def plot_model_intersection_sets(
     percentage: int = 10,
     subset_type: str = 'best',
     save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
     show: bool = True
 ) -> None:
     """
@@ -838,6 +1186,10 @@ def plot_model_intersection_sets(
         or 'worst' (highest error).
     save : bool, default False
         If True, automatically saves the plot as a high-resolution PNG.
+    save_path : str or Path, optional
+        If provided, overrides the save directory or full file path. If a
+        directory is provided, the default filename is used. If a filename
+        is provided, it is used directly. Ignored when save is False.
     show : bool, default True
         If True, calls plt.show() to display the plot immediately.
 
@@ -898,14 +1250,19 @@ def plot_model_intersection_sets(
     plt.suptitle(f"Intersection of {percentage}% {subset_type} predictions", fontsize=24, fontweight='bold')
     
     if save:
-        save_dir = RESULT_DIR / "plots" / "intersection_plots"
-        save_dir.mkdir(exist_ok=True)
-        plt.savefig(
-            str(save_dir / f"{subset_type}_{percentage}_intersections.png"), 
-            dpi=300,             
-            bbox_inches='tight', 
-            transparent=False   
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "intersection_plots",
+            f"{subset_type}_{percentage}_intersections.png"
         )
+        if save_target is not None:
+            plt.savefig(
+                str(save_target),
+                dpi=300,
+                bbox_inches='tight',
+                transparent=False
+            )
     if show:
         plt.show()
     else:
