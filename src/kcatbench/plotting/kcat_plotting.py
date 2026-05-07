@@ -425,6 +425,7 @@ def plot_metric_heatmap_across_datasets(
     dataset_names: list[str],
     model_names: dict[str, str],
     log_scale: bool = True,
+    y_axis_right: bool = False,
     save: bool = False,
     save_path: Optional[Union[str, Path]] = None,
     show: bool = True
@@ -609,13 +610,13 @@ def plot_metric_heatmap_across_datasets(
         normalized = np.where(np.isfinite(values), normalized, np.nan)
         norm_matrix[:, metric_idx::n_metrics] = normalized
 
-    fig_width = max(10, 0.6 * n_cols + 2)
-    fig_height = max(4.5, 0.35 * n_models + 2)
+    fig_width = max(6, 0.6 * n_cols + 2)
+    fig_height = max(5, 0.35 * n_models + 2)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     sns.set_style("ticks")
 
     cmap = sns.color_palette("rocket", as_cmap=True)
-    cmap.set_bad("black")
+    cmap.set_bad("gray")
     mask = np.isnan(norm_matrix)
     sns.heatmap(
         norm_matrix,
@@ -675,23 +676,30 @@ def plot_metric_heatmap_across_datasets(
     ax.set_ylabel("Model", fontsize=12)
 
     metric_space_label = "log10" if log_scale else "linear"
-    ax.set_title(
-        f"Model metrics across datasets ({metric_space_label} space)",
-        fontsize=15,
-        fontweight='bold',
-        pad=35
-    )
+    # ax.set_title(
+    #     f"Model metrics across datasets ({metric_space_label} space)",
+    #     fontsize=15,
+    #     fontweight='bold',
+    #     pad=35
+    # )
 
-    sns.despine()
+    if(y_axis_right):
+        ax.yaxis.tick_right()                  
+        ax.yaxis.set_label_position("right")
+        sns.despine(left=True, right=False)
+    else:
+        sns.despine()
+
     plt.tight_layout()
     fig.subplots_adjust(top=0.86)
 
     if save:
+        dataset_names_str = "_".join(dataset_names)
         save_target = _resolve_save_target(
             save,
             save_path,
             RESULT_DIR / "plots" / "metric_heatmap_plots",
-            f"metric_heatmap_{metric_space_label}.png"
+            f"metric_heatmap_{metric_space_label}_{dataset_names_str}.png"
         )
         if save_target is not None:
             plt.savefig(
@@ -735,6 +743,13 @@ def confidence_ellipse(x, y, ax, n_std=3.0, facecolor='none', **kwargs):
         raise ValueError("x and y must be the same size")
 
     cov = np.cov(x, y)
+
+    eigenvalues = np.linalg.eigvals(cov)
+    
+    major_axis_length = np.sqrt(np.max(eigenvalues))
+    minor_axis_length = np.sqrt(np.min(eigenvalues))
+    axis_ratio = minor_axis_length / major_axis_length
+
     pearson = cov[0, 1]/np.sqrt(cov[0, 0] * cov[1, 1])
 
     ell_radius_x = np.sqrt(1 + pearson)
@@ -748,13 +763,18 @@ def confidence_ellipse(x, y, ax, n_std=3.0, facecolor='none', **kwargs):
     scale_y = np.sqrt(cov[1, 1]) * n_std
     mean_y = np.mean(y)
 
+    ellipse_x_bounds = [mean_x - scale_x, mean_x + scale_x]
+    ellipse_y_bounds = [mean_y - scale_y, mean_y + scale_y]
+
     transf = transforms.Affine2D() \
         .rotate_deg(45) \
         .scale(scale_x, scale_y) \
         .translate(mean_x, mean_y)
 
     ellipse.set_transform(transf + ax.transData)
-    return ax.add_patch(ellipse)
+    ax.add_patch(ellipse)
+
+    return axis_ratio, ellipse_x_bounds, ellipse_y_bounds
 
 
 
@@ -959,15 +979,15 @@ def plot_model_comparison(
         vmax=vmax
     )
 
-    confidence_ellipse(plot_x, plot_y, ax, n_std=n_std, edgecolor='red', linestyle='--', linewidth=1)
+    axis_ratio, ellipse_x_bounds, ellipse_y_bounds = confidence_ellipse(plot_x, plot_y, ax, n_std=n_std, edgecolor='red', linestyle='--', linewidth=1)
     
-    cov_matrix = np.cov(plot_x, plot_y)
-    std_x = np.sqrt(cov_matrix[0, 0])
-    std_y = np.sqrt(cov_matrix[1, 1])
-    mean_x = np.mean(plot_x)
-    mean_y = np.mean(plot_y)
-    ellipse_x_bounds = [mean_x - (n_std * std_x), mean_x + (n_std * std_x)]
-    ellipse_y_bounds = [mean_y - (n_std * std_y), mean_y + (n_std * std_y)]
+    # cov_matrix = np.cov(plot_x, plot_y)
+    # std_x = np.sqrt(cov_matrix[0, 0])
+    # std_y = np.sqrt(cov_matrix[1, 1])
+    # mean_x = np.mean(plot_x)
+    # mean_y = np.mean(plot_y)
+    # ellipse_x_bounds = [mean_x - (n_std * std_x), mean_x + (n_std * std_x)]
+    # ellipse_y_bounds = [mean_y - (n_std * std_y), mean_y + (n_std * std_y)]
 
     cb = plt.colorbar(
         hb, 
@@ -1067,53 +1087,49 @@ def plot_model_comparison(
     else:
         plt.close(fig)
 
+    return axis_ratio, ellipse_x_bounds, ellipse_y_bounds
+
 
 
 def get_performance_subsets(
-    df:pd.DataFrame, 
-    models:list[str], 
-    percentage=10, 
-    subset_type='best'
+    df: pd.DataFrame, 
+    models: list[str], 
+    threshold_value: float = 10.0, 
+    subset_type: str = 'best',
+    threshold_mode: str = 'percentile'
 ) -> dict[str, set]:
     r"""
     Extract subsets of Reaction IDs based on model prediction error thresholds.
-    
-    This function calculates the absolute log10 error for each model, filters out 
-    invalid data (non-positive or NaN), and returns the IDs of the best or 
-    worst performing reactions.
 
     Parameters
     ----------
     df : pd.DataFrame
         Dataframe containing an 'ID' column, an 'experimental_kcat' column, 
-        and model columns named '{model}_kcat'.
+        and model columns named '{model}_kcat' (or matching model names).
     models : list[str]
         List of model identifiers used to locate the relevant columns in `df`.
-    percentage : int, default 10
-        The percentage of data to include in the subset (e.g., top 10%).
+    threshold_value : float, default 10.0
+        The numeric value for the threshold. If threshold_mode is 'percentile', 
+        this is the % of the dataset to include. If 'relative_margin', this is 
+        the acceptable error percentage (e.g., 10 means 10% error margin).
     subset_type : str, default 'best'
-        The type of performance subset to extract. Must be 'best' (lowest error) 
-        or 'worst' (highest error).
+        Must be 'best' (lowest error) or 'worst' (highest error).
+    threshold_mode : str, default 'percentile'
+        'percentile': takes the top/bottom X% of the dataset based on absolute log10 error.
+        'relative_margin': takes predictions within/outside an X% relative error margin.
 
     Returns
     -------
     dict[str, set]
-        A dictionary where keys are model names and values are sets of 
-        Reaction IDs belonging to the performance subset.
-
-    Notes
-    -----
-    - Error is calculated as: $|\log_{10}(k_{cat, pred}) - \log_{10}(k_{cat, exp})|$
-    - If a model's prediction is stored as a list or array, the first element 
-      is automatically extracted.
-    - Non-positive kcat values are excluded from the calculation.
+        Dictionary where keys are model names and values are sets of Reaction IDs.
     """
     
     if subset_type not in ['best', 'worst']:
         raise ValueError("subset_type must be either 'best' or 'worst'")
+    if threshold_mode not in ['percentile', 'relative_margin', 'log_margin']:
+        raise ValueError("threshold_mode must be 'percentile' or 'relative_margin' or 'log_margin'")
     
     model_sets = {}
-    
     exp_mask = (df['experimental_kcat'] > 0) & df['experimental_kcat'].notna()
 
     for model in models:
@@ -1125,6 +1141,7 @@ def get_performance_subsets(
 
         clean_df = df.loc[exp_mask, ['ID', 'experimental_kcat', mod_col]].copy()
 
+        # Handle lists/arrays in predictions
         clean_df[mod_col] = clean_df[mod_col].apply(
             lambda x: x[0] if isinstance(x, (list, np.ndarray, tuple)) else x
         )
@@ -1139,15 +1156,33 @@ def get_performance_subsets(
             model_sets[model] = set()
             continue
             
-        errors = np.abs(np.log10(clean_df[mod_col]) - np.log10(clean_df['experimental_kcat']))
-        
-        if subset_type == 'best':
-            threshold = np.percentile(errors, percentage)
-            subset_mask = errors <= threshold
-        else:
-            threshold = np.percentile(errors, 100 - percentage)
-            subset_mask = errors >= threshold
+        if threshold_mode == 'percentile':
+            errors = np.abs(np.log10(clean_df[mod_col]) - np.log10(clean_df['experimental_kcat']))
             
+            if subset_type == 'best':
+                threshold = np.percentile(errors, threshold_value)
+                subset_mask = errors <= threshold
+            else:
+                threshold = np.percentile(errors, 100 - threshold_value)
+                subset_mask = errors >= threshold
+                
+        elif threshold_mode == 'relative_margin':
+            errors = np.abs(clean_df[mod_col] - clean_df['experimental_kcat']) / clean_df['experimental_kcat']
+            fractional_threshold = threshold_value / 100.0
+            
+            if subset_type == 'best':
+                subset_mask = errors <= fractional_threshold
+            else:
+                subset_mask = errors >= fractional_threshold
+
+        elif threshold_mode == 'log_margin':
+            errors = np.abs(np.log10(clean_df[mod_col]) - np.log10(clean_df['experimental_kcat']))
+            
+            if subset_type == 'best':
+                subset_mask = errors <= threshold_value
+            else:
+                subset_mask = errors >= threshold_value
+                
         model_sets[model] = set(clean_df.loc[subset_mask, 'ID'])
         
     return model_sets
@@ -1157,7 +1192,8 @@ def get_performance_subsets(
 def plot_model_intersection_sets(
     df: pd.DataFrame,
     model_names: dict[str, str],
-    percentage: int = 10,
+    threshold_value: float = 10.0,
+    threshold_mode: str = "percentile",
     subset_type: str = 'best',
     save: bool = False,
     save_path: Optional[Union[str, Path]] = None,
@@ -1204,7 +1240,7 @@ def plot_model_intersection_sets(
       and extract Reaction IDs.
     """
 
-    model_sets = get_performance_subsets(df, list(model_names.keys()), percentage=percentage, subset_type=subset_type)
+    model_sets = get_performance_subsets(df, list(model_names.keys()), threshold_value=threshold_value, threshold_mode=threshold_mode, subset_type=subset_type)
 
     if not model_sets or all(len(s) == 0 for s in model_sets.values()):
         logger.error("Error: No data to plot.")
@@ -1218,27 +1254,33 @@ def plot_model_intersection_sets(
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=".*downcasting.*", category=FutureWarning)
         upset_data = from_contents(plot_ready_sets)
-    
-    upset = UpSet(
-        upset_data, 
-        subset_size='count', 
-        show_counts=False, 
-        sort_by='cardinality',
-        sort_categories_by='cardinality',
-        facecolor="gray",
-        element_size=40
-    )
 
-    num_models = len(model_names)
-    cmap = LinearSegmentedColormap.from_list("muted_gradient", ["#316FD3", "#D2151C"])
-    colors = [cmap(i) for i in np.linspace(0, 1, num_models)]
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", 
+            message=".*chained assignment.*", 
+            category=FutureWarning
+        )
+        upset = UpSet(
+            upset_data, 
+            subset_size='count', 
+            show_counts=False, 
+            sort_by='cardinality',
+            sort_categories_by='cardinality',
+            facecolor="gray",
+            element_size=40
+        )
 
-    for degree in range(1, num_models + 1):
-        upset.style_subsets(min_degree=degree, max_degree=degree, facecolor=colors[degree - 1])
-    
-    fig = plt.figure(figsize=(10, 6))
+        num_models = len(model_names)
+        cmap = LinearSegmentedColormap.from_list("muted_gradient", ["#316FD3", "#D2151C"])
+        colors = [cmap(i) for i in np.linspace(0, 1, num_models)]
 
-    axes_dict = upset.plot(fig=fig)
+        for degree in range(1, num_models + 1):
+            upset.style_subsets(min_degree=degree, max_degree=degree, facecolor=colors[degree - 1])
+        
+        fig = plt.figure(figsize=(10, 6))
+
+        axes_dict = upset.plot(fig=fig)
 
     axes_dict['intersections'].tick_params(axis='y', labelsize=13)
     axes_dict['intersections'].set_ylabel('Intersection size', fontsize=15)
@@ -1247,14 +1289,35 @@ def plot_model_intersection_sets(
 
     axes_dict['matrix'].tick_params(axis='y', labelsize=15) 
 
-    plt.suptitle(f"Intersection of {percentage}% {subset_type} predictions", fontsize=24, fontweight='bold')
-    
+    if threshold_mode == 'percentile':
+        title_text = f"Intersection of {int(threshold_value)}% {subset_type} predictions"
+
+    elif threshold_mode == 'relative_margin':
+        relation = "within" if subset_type == 'best' else "exceeding"
+        title_text = f"Intersection of predictions {relation} {threshold_value}% relative error"
+
+    elif threshold_mode == 'log_margin':
+        relation = "within" if subset_type == 'best' else "exceeding"
+        title_text = f"Intersection of predictions {relation} {threshold_value} log10 error"
+
+    plt.suptitle(title_text, fontsize=24, fontweight='bold')
     if save:
+        if threshold_mode == 'percentile':
+            file_suffix = f"{int(threshold_value)}pct"
+
+        elif threshold_mode == 'relative_margin':
+            file_suffix = f"{int(threshold_value)}pct_rel"
+
+        elif threshold_mode == 'log_margin':
+            file_suffix = f"{threshold_value}log"
+
+        save_filename = f"{subset_type}_{file_suffix}_intersections.png"
+
         save_target = _resolve_save_target(
             save,
             save_path,
             RESULT_DIR / "plots" / "intersection_plots",
-            f"{subset_type}_{percentage}_intersections.png"
+            save_filename
         )
         if save_target is not None:
             plt.savefig(
