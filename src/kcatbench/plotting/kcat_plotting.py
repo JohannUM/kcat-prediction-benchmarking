@@ -7,7 +7,8 @@ import warnings
 import matplotlib.transforms as transforms
 from matplotlib.patches import Ellipse
 from matplotlib.ticker import FuncFormatter
-from matplotlib.colors import LinearSegmentedColormap
+from matplotlib.colors import LinearSegmentedColormap, Colormap, Normalize
+from matplotlib.cm import ScalarMappable
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from scipy.stats import pearsonr, spearmanr
 from pathlib import Path
@@ -118,6 +119,260 @@ def _resolve_save_target(
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
     return target_path
+
+
+def plot_standalone_colorbar(
+    vmin: float,
+    vmax: float,
+    cmap: Union[str, Colormap],
+    label: str = "",
+    orientation: str = 'vertical',
+    figsize: Optional[tuple[float, float]] = None,
+    save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
+    show: bool = True
+) -> None:
+    """
+    Plot a standalone colorbar for a specific range and colormap.
+    
+    This is highly useful for generating unified legends for multi-panel 
+    publication figures.
+
+    Parameters
+    ----------
+    vmin : float
+        The minimum value of the data range.
+    vmax : float
+        The maximum value of the data range.
+    cmap_name : str
+        The name of the Matplotlib/Seaborn colormap (e.g., 'rocket', 'vlag').
+    label : str, default ""
+        The text label to display alongside the colorbar.
+    orientation : str, default 'vertical'
+        Must be 'vertical' or 'horizontal'.
+    figsize : tuple[float, float], optional
+        The dimensions of the figure. If None, defaults are chosen 
+        intelligently based on orientation.
+    save : bool, default False
+        If True, saves the figure.
+    save_path : str or Path, optional
+        Target path or directory for saving the figure.
+    show : bool, default True
+        If True, displays the figure; otherwise closes it.
+    """
+    
+    if orientation not in ['vertical', 'horizontal']:
+        raise ValueError("orientation must be 'vertical' or 'horizontal'")
+
+    if figsize is None:
+        figsize = (1.5, 6.0) if orientation == 'vertical' else (6.0, 1.5)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    norm = Normalize(vmin=vmin, vmax=vmax)
+
+    if isinstance(cmap, str):
+        resolved_cmap = plt.get_cmap(cmap)
+    else:
+        resolved_cmap = cmap
+    
+    sm = ScalarMappable(cmap=resolved_cmap, norm=norm)
+    sm.set_array([]) 
+    
+    cbar = fig.colorbar(sm, cax=ax, orientation=orientation)
+    
+    if label:
+        cbar.set_label(label, fontsize=12, labelpad=10)
+        
+    cbar.ax.tick_params(labelsize=11)
+    
+    plt.tight_layout()
+
+    if save:
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "colorbars",
+            f"colorbar_{orientation}.png"
+        )
+        if save_target is not None:
+            plt.savefig(
+                str(save_target),
+                dpi=300,
+                bbox_inches='tight'
+            )
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+
+def plot_dual_dataset_correlation_heatmap(
+    dataset_1: pd.DataFrame,
+    dataset_name_1: str,
+    dataset_2: pd.DataFrame,
+    dataset_name_2: str,
+    model_names: dict[str, str],
+    metric: str = 'pearson',
+    log_scale: bool = True,
+    vmin: float = 0.0,
+    vmax: float = 1.0,
+    y_axis_right: bool = False,
+    save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
+    show: bool = True
+) -> None:
+    if metric.lower() not in ['pearson', 'srcc', 'spearman']:
+        raise ValueError("metric must be 'pearson' or 'srcc'")
+        
+    pandas_corr_method = 'spearman' if metric.lower() in ['srcc', 'spearman'] else 'pearson'
+
+    if len(model_names) < 2:
+        raise ValueError("model_names must contain at least two models to correlate.")
+
+    resolved_columns = {model_key: _resolve_model_column(model_key) for model_key in model_names}
+    all_model_keys = list(model_names.keys())
+    cols_to_extract = [resolved_columns[k] for k in all_model_keys]
+    
+    def _prep_dataset(df: pd.DataFrame) -> np.ndarray:
+        df_models = pd.DataFrame(index=df.index)
+        for col in cols_to_extract:
+            if col in df.columns:
+                df_models[col] = df[col].apply(_extract_scalar)
+            else:
+                df_models[col] = np.nan
+
+        for col in cols_to_extract:
+            df_models[col] = pd.to_numeric(df_models[col], errors='coerce')
+            df_models.loc[np.isinf(df_models[col]), col] = np.nan
+
+        if log_scale:
+            for col in cols_to_extract:
+                df_models.loc[df_models[col] <= 0, col] = np.nan
+            df_models = np.log10(df_models)
+
+        return df_models.corr(method=pandas_corr_method).to_numpy()
+
+    raw_matrix_1 = _prep_dataset(dataset_1)
+    raw_matrix_2 = _prep_dataset(dataset_2)
+
+    n_models = len(all_model_keys)
+    combined_matrix = np.full((n_models, n_models), np.nan)
+    
+    for i in range(n_models):
+        for j in range(n_models):
+            orig_j = n_models - 1 - j
+            if i + j < n_models - 1:
+                combined_matrix[i, j] = raw_matrix_1[i, orig_j]
+            elif i + j > n_models - 1:
+                combined_matrix[i, j] = raw_matrix_2[i, orig_j]
+
+    ordered_display_names = [model_names[k] for k in all_model_keys]
+    reversed_display_names = ordered_display_names[::-1]
+
+    fig_size = max(6, 0.6 * n_models + 2)
+    fig, ax = plt.subplots(figsize=(fig_size, fig_size))
+    sns.set_style("ticks")
+
+    cmap = sns.color_palette("rocket", as_cmap=True)
+    cmap.set_bad("gray")
+    mask = np.isnan(combined_matrix)
+
+    sns.heatmap(
+        combined_matrix,
+        ax=ax,
+        cmap=cmap,
+        mask=mask,
+        vmin=vmin,
+        vmax=vmax,
+        cbar=False,
+        linewidths=0.5,
+        linecolor='white'
+    )
+
+    ax.plot([0, n_models], [n_models, 0], color='white', linewidth=1, zorder=5)
+
+    ax.set_xticklabels(reversed_display_names, rotation=45, ha='right', fontsize=11)
+    ax.set_yticklabels(ordered_display_names, rotation=0, fontsize=11)
+
+    for row_idx in range(n_models):
+        for col_idx in range(n_models):
+            raw_value = combined_matrix[row_idx, col_idx]
+            if not np.isfinite(raw_value):
+                continue
+                
+            text_color = 'white' if abs(raw_value) < 0.5 else 'black'
+            formatted_val = f"{raw_value:.2f}" 
+            
+            ax.text(
+                col_idx + 0.5,
+                row_idx + 0.5,
+                formatted_val,
+                ha='center',
+                va='center',
+                fontsize=9,
+                color=text_color
+            )
+
+    ax.set_xlabel("Model", fontsize=12)
+    ax.set_ylabel("Model", fontsize=12)
+
+    if y_axis_right:
+        ax.yaxis.tick_right()                  
+        ax.yaxis.set_label_position("right")
+        sns.despine(left=True, right=False, top=True, bottom=False)
+    else:
+        sns.despine()
+
+    ax.text(
+        0.5,
+        1.02,
+        dataset_name_1,
+        transform=ax.transAxes,
+        ha='center',
+        va='bottom',
+        fontsize=13,
+        fontweight='bold'
+    )
+
+    x_offset_ds2 = 1.25 if y_axis_right else 1.05
+    ax.text(
+        x_offset_ds2,
+        0.5,
+        dataset_name_2,
+        transform=ax.transAxes,
+        ha='left',
+        va='center',
+        rotation=-90,
+        fontsize=13,
+        fontweight='bold'
+    )
+
+    plt.tight_layout()
+
+    if save:
+        metric_space_label = "log10" if log_scale else "linear"
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "model_heatmap_plots",
+            f"dual_correlation_{metric}_{metric_space_label}_{dataset_name_1}_vs_{dataset_name_2}.png"
+        )
+        if save_target is not None:
+            plt.savefig(
+                str(save_target),
+                dpi=300,
+                bbox_inches='tight',
+                transparent=False
+            )
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
 
 
 def plot_r2_comparison_across_datasets(
@@ -791,7 +1046,9 @@ def plot_model_comparison(
     save_path: Optional[Union[str, Path]] = None,
     show=True,
     model_vs_model: bool = False,
+    show_stats: bool = True,
     show_ellipse_stats: bool = False,
+    show_c_bar: bool = True,
     ellipse_stats_position: str = 'upper_right'
 ):
     """
@@ -981,21 +1238,16 @@ def plot_model_comparison(
 
     axis_ratio, ellipse_x_bounds, ellipse_y_bounds = confidence_ellipse(plot_x, plot_y, ax, n_std=n_std, edgecolor='red', linestyle='--', linewidth=1)
     
-    # cov_matrix = np.cov(plot_x, plot_y)
-    # std_x = np.sqrt(cov_matrix[0, 0])
-    # std_y = np.sqrt(cov_matrix[1, 1])
-    # mean_x = np.mean(plot_x)
-    # mean_y = np.mean(plot_y)
-    # ellipse_x_bounds = [mean_x - (n_std * std_x), mean_x + (n_std * std_x)]
-    # ellipse_y_bounds = [mean_y - (n_std * std_y), mean_y + (n_std * std_y)]
+    if show_c_bar:
+        cb = plt.colorbar(
+            hb, 
+            label='Count', 
+            shrink=0.5,     
+            aspect=20,      
+            pad=0.05      
+        )
 
-    cb = plt.colorbar(
-        hb, 
-        label='Count', 
-        shrink=0.5,     
-        aspect=20,      
-        pad=0.05      
-    )
+        cb.ax.minorticks_off()
     
     plt.plot([lower_limit, upper_limit], [lower_limit, upper_limit], 
              color='black',     
@@ -1003,16 +1255,30 @@ def plot_model_comparison(
              alpha=0.6,        
              linewidth=1.0, 
              label='Perfect Agreement')
+    
+    median_x = np.mean(plot_x)
+    median_y = np.mean(plot_y)
 
-    ax.text(
-        0.05,
-        0.95,
-        stats_text,
-        transform=ax.transAxes,
-        fontsize=11,
-        verticalalignment='top',
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9)
+    ax.scatter(
+        median_x, median_y, 
+        marker='X',         
+        s=150,           
+        facecolor='white', 
+        edgecolor='black',   
+        linewidth=1.5,
+        zorder=5,       
+        label='Median'
     )
+    if show_stats:
+        ax.text(
+            0.05,
+            0.95,
+            stats_text,
+            transform=ax.transAxes,
+            fontsize=13,
+            verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9)
+        )
 
     if ellipse_stats_text is not None:
         panel_positions = {
@@ -1034,7 +1300,7 @@ def plot_model_comparison(
             y_text,
             ellipse_stats_text,
             transform=ax.transAxes,
-            fontsize=10,
+            fontsize=13,
             horizontalalignment=ha,
             verticalalignment=va,
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.85)
@@ -1062,7 +1328,6 @@ def plot_model_comparison(
     ax.set_yticks(ellipse_y_bounds, minor=True)
     ax.tick_params(which='minor', color='red', length=8, width=2, direction='in')
 
-    cb.ax.minorticks_off()
     
     plt.title(f"{model_x_name} vs {model_y_name}", fontsize=16, fontweight='bold')
     
@@ -1088,7 +1353,6 @@ def plot_model_comparison(
         plt.close(fig)
 
     return axis_ratio, ellipse_x_bounds, ellipse_y_bounds
-
 
 
 def get_performance_subsets(
@@ -1141,7 +1405,6 @@ def get_performance_subsets(
 
         clean_df = df.loc[exp_mask, ['ID', 'experimental_kcat', mod_col]].copy()
 
-        # Handle lists/arrays in predictions
         clean_df[mod_col] = clean_df[mod_col].apply(
             lambda x: x[0] if isinstance(x, (list, np.ndarray, tuple)) else x
         )
@@ -1186,6 +1449,176 @@ def get_performance_subsets(
         model_sets[model] = set(clean_df.loc[subset_mask, 'ID'])
         
     return model_sets
+
+
+
+def plot_ec_class_enrichment(
+    df: pd.DataFrame, 
+    model_names: dict[str, str],
+    ec_column_name: str = "ec_number",
+    threshold_value: float = 10.0, 
+    subset_type: str = 'best',
+    threshold_mode: str = 'percentile',
+    pseudocount: float = 0.1,
+    y_limit: Optional[float] = None,
+    y_axis_right: bool = False,
+    show: bool = True,
+    save: bool = False,
+    save_path: Optional[Union[str, Path]] = None
+) -> None:
+    subsets = get_performance_subsets(
+        df, 
+        list(model_names.keys()), 
+        subset_type=subset_type,
+        threshold_value=threshold_value,
+        threshold_mode=threshold_mode
+    )
+    
+    ec_name_map = {
+        '1': '1: Oxidoreductases',
+        '2': '2: Transferases',
+        '3': '3: Hydrolases',
+        '4': '4: Lyases',
+        '5': '5: Isomerases',
+        '6': '6: Ligases',
+        '7': '7: Translocases'
+    }
+    
+    valid_ec_classes = ['1', '2', '3', '4', '5', '6', '7']
+    x_positions = np.arange(len(valid_ec_classes))
+    
+    bg_ec_series = df[ec_column_name].astype(str).str.split('.').str[0]
+    bg_ec_series = bg_ec_series[bg_ec_series.isin(valid_ec_classes)]
+    
+    if bg_ec_series.empty:
+        raise ValueError(f"No valid EC classes (1-7) found in column '{ec_column_name}'.")
+
+    bg_dist = bg_ec_series.value_counts(normalize=True) * 100
+    bg_vals = np.array([bg_dist.get(ec, 0.0) for ec in valid_ec_classes])
+    
+    fig, ax = plt.subplots(figsize=(7, 5))
+    sns.set_style("ticks")
+    
+    colors = sns.color_palette("husl", n_colors=len(model_names))
+    max_abs_log2fc = 0.0
+    
+    for idx, (model_key, subset_ids) in enumerate(subsets.items()):
+        subset_df = df[df['ID'].isin(subset_ids)]
+        
+        if subset_df.empty:
+            continue
+            
+        sub_ec_series = subset_df[ec_column_name].astype(str).str.split('.').str[0]
+        sub_ec_series = sub_ec_series[sub_ec_series.isin(valid_ec_classes)]
+        
+        sub_dist = sub_ec_series.value_counts(normalize=True) * 100
+        sub_vals = np.array([sub_dist.get(ec, 0.0) for ec in valid_ec_classes])
+        
+        log2fc = np.log2((sub_vals + pseudocount) / (bg_vals + pseudocount))
+        
+        current_max_abs = np.max(np.abs(log2fc))
+        if current_max_abs > max_abs_log2fc:
+            max_abs_log2fc = current_max_abs
+            
+        clean_name = model_names.get(model_key, model_key)
+        ax.plot(
+            x_positions, 
+            log2fc, 
+            marker='o', 
+            linewidth=2, 
+            markersize=7, 
+            color=colors[idx], 
+            label=clean_name
+        )
+
+    ax.axhline(0, color='black', linestyle='--', linewidth=1.5, zorder=1)
+    
+    final_y_limit = y_limit if y_limit is not None else (max_abs_log2fc * 1.1 if max_abs_log2fc > 0 else 1.0)
+    ax.set_ylim(-final_y_limit, final_y_limit)
+    
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels([ec_name_map[ec] for ec in valid_ec_classes], rotation=45, ha='right')
+    
+    ax.set_xlabel("EC Class", fontsize=12)
+    ax.set_ylabel(r"Enrichment ($\log_2$ Fold Change)", fontsize=12)
+    
+    if threshold_mode == 'percentile':
+        title_text = f"EC Class Enrichment: {int(threshold_value)}% {subset_type} predictions"
+    elif threshold_mode == 'relative_margin':
+        relation = "within" if subset_type == 'best' else "exceeding"
+        title_text = f"EC Class Enrichment: Predictions {relation} {threshold_value}% rel error"
+    elif threshold_mode == 'log_margin':
+        relation = "within" if subset_type == 'best' else "exceeding"
+        title_text = f"EC Class Enrichment: Predictions {relation} {threshold_value} log10 error"
+    else:
+        title_text = f"EC Class Enrichment ({subset_type})"
+        
+    plt.suptitle(title_text, fontsize=16, fontweight='bold', y=1.02)
+    
+    if y_axis_right:
+        sns.despine(left=True, right=False, top=True, bottom=False)
+        
+        ax.yaxis.tick_right()                  
+        ax.yaxis.set_label_position("right")
+        
+        ax.tick_params(
+            axis='y',        
+            right=True,     
+            left=False
+        )
+    else:
+        sns.despine()
+
+    plt.tight_layout()
+
+    if save:
+        if threshold_mode == 'percentile':
+            file_suffix = f"{int(threshold_value)}pct"
+        elif threshold_mode == 'relative_margin':
+            file_suffix = f"{int(threshold_value)}pct_rel"
+        elif threshold_mode == 'log_margin':
+            file_suffix = f"{threshold_value}log"
+        else:
+            file_suffix = "subset"
+            
+        save_filename = f"ec_enrichment_{subset_type}_{file_suffix}.png"
+        legend_filename = f"ec_enrichment_{subset_type}_{file_suffix}_legend.png"
+        
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "ec_enrichment_plots",
+            save_filename
+        )
+        if save_target is not None:
+            plt.savefig(str(save_target), dpi=300, bbox_inches='tight', transparent=False)
+            
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                
+                fig_width = max(3, len(handles) * 1.5)
+                fig_leg = plt.figure(figsize=(fig_width, 1))
+                
+                ax_leg = fig_leg.add_subplot(111)
+                ax_leg.axis('off')
+                
+                ax_leg.legend(
+                    handles, 
+                    labels, 
+                    loc='center', 
+                    frameon=False, 
+                    title="Model", 
+                    ncol=len(handles)
+                )
+                
+                leg_target = save_target.parent / legend_filename
+                fig_leg.savefig(str(leg_target), dpi=300, bbox_inches='tight', transparent=True)
+                plt.close(fig_leg)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
 
 
 
