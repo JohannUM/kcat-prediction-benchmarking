@@ -43,7 +43,8 @@ results/plots/*
 
 results/predictions/*
 !results/predictions/.gitkeep
-
+!results/predictions/brenda_predicted.csv
+!results/predictions/enzy_extract_predicted.csv
 # Python cache / build
 __pycache__/
 *.py[cod]
