@@ -6,7 +6,8 @@ from .kcat_plotting import (
     plot_metric_heatmap_across_datasets,
     plot_standalone_colorbar,
     plot_dual_dataset_correlation_heatmap,
-    plot_ec_class_enrichment
+    plot_ec_class_enrichment,
+    plot_metric_vs_delta_growth
 )
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "plot_metric_heatmap_across_datasets",
     "plot_standalone_colorbar",
     "plot_dual_dataset_correlation_heatmap",
-    "plot_ec_class_enrichment"
+    "plot_ec_class_enrichment",
+    "plot_metric_vs_delta_growth"
 ]

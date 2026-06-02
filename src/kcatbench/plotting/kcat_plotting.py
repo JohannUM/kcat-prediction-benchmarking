@@ -5,6 +5,7 @@ import pandas as pd
 import logging
 import warnings
 import matplotlib.transforms as transforms
+import matplotlib.ticker as ticker
 from matplotlib.patches import Ellipse
 from matplotlib.ticker import FuncFormatter
 from matplotlib.colors import LinearSegmentedColormap, Colormap, Normalize
@@ -970,6 +971,239 @@ def plot_metric_heatmap_across_datasets(
         plt.close(fig)
 
 
+def plot_metric_vs_delta_growth(
+    dataset: pd.DataFrame,
+    model_names: dict[str, str],
+    delta_growth: dict[str, float],
+    log_scale: bool = True,
+    show_fit_r2: bool = True,
+    save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
+    show: bool = True
+) -> None:
+    if not isinstance(dataset, pd.DataFrame):
+        raise ValueError("dataset must be a pandas DataFrame.")
+        
+    if 'experimental_kcat' not in dataset.columns:
+        raise ValueError("Dataset is missing required column 'experimental_kcat'.")
+
+    if len(model_names) == 0:
+        raise ValueError("model_names must contain at least one model mapping.")
+
+    resolved_columns = {model_key: _resolve_model_column(model_key) for model_key in model_names}
+    
+    model_metrics = {}
+    
+    for model_key, model_col in resolved_columns.items():
+        if model_col not in dataset.columns:
+            logger.warning("Dataset is missing model column '%s'. Skipping.", model_col)
+            continue
+
+        pair_df = dataset[['experimental_kcat', model_col]].copy()
+        pair_df['experimental_kcat'] = pair_df['experimental_kcat'].apply(_extract_scalar)
+        pair_df[model_col] = pair_df[model_col].apply(_extract_scalar)
+
+        pair_df['experimental_kcat'] = pd.to_numeric(pair_df['experimental_kcat'], errors='coerce')
+        pair_df[model_col] = pd.to_numeric(pair_df[model_col], errors='coerce')
+        pair_df = pair_df.dropna()
+        pair_df = pair_df[~pair_df.isin([np.inf, -np.inf]).any(axis=1)]
+
+        if log_scale:
+            pair_df = pair_df[
+                (pair_df['experimental_kcat'] > 0)
+                & (pair_df[model_col] > 0)
+            ]
+
+        if len(pair_df) < 2:
+            logger.warning("Not enough valid points for metrics: model='%s'.", model_col)
+            continue
+
+        y_true = pair_df['experimental_kcat'].to_numpy(dtype=float)
+        y_pred = pair_df[model_col].to_numpy(dtype=float)
+        
+        if log_scale:
+            y_true = np.log10(y_true)
+            y_pred = np.log10(y_pred)
+
+        model_metrics[model_key] = _compute_comparison_metrics(
+            y_pred,
+            y_true,
+            include_ground_truth_metrics=True
+        )
+
+    metric_keys = ['r2', 'pearson_r', 'srcc', 'rmse', 'mae']
+    metric_labels = [r"$R^2$", "Pearson r", "SRCC", "RMSE", "MAE"]
+    
+    fig, axes = plt.subplots(nrows=2, ncols=3, figsize=(10, 6.5), sharey=True)
+    axes = axes.flatten()
+    sns.set_style("ticks")
+    
+    colors = sns.color_palette("husl", n_colors=len(model_names))
+    color_map = {key: color for key, color in zip(model_names.keys(), colors)}
+    
+    corr_min = float('inf')
+    corr_max = float('-inf')
+    
+    for m_key in ['r2', 'pearson_r', 'srcc']:
+        for model_key in model_metrics:
+            val = model_metrics[model_key].get(m_key, np.nan)
+            if np.isfinite(val):
+                corr_min = min(corr_min, val)
+                corr_max = max(corr_max, val)
+                
+    if corr_min != float('inf') and corr_max != float('-inf'):
+        padding = (corr_max - corr_min) * 0.05
+        corr_xlim = (corr_min - padding, corr_max + padding)
+    else:
+        corr_xlim = None
+
+    err_min = float('inf')
+    err_max = float('-inf')
+    
+    for m_key in ['rmse', 'mae']:
+        for model_key in model_metrics:
+            val = model_metrics[model_key].get(m_key, np.nan)
+            if np.isfinite(val):
+                err_min = min(err_min, val)
+                err_max = max(err_max, val)
+                
+    if err_min != float('inf') and err_max != float('-inf'):
+        padding = (err_max - err_min) * 0.05
+        if padding == 0:
+            padding = 0.1
+        err_xlim = (err_min - padding, err_max + padding)
+    else:
+        err_xlim = None
+    
+    for i, (m_key, m_label) in enumerate(zip(metric_keys, metric_labels)):
+        ax = axes[i]
+        ax.set_box_aspect(1)
+        x_data = []
+        y_data = []
+        
+        for model_key, model_col in resolved_columns.items():
+            if model_key not in model_metrics:
+                continue
+                
+            d_growth = delta_growth.get(model_col, delta_growth.get(model_key))
+            metric_val = model_metrics[model_key].get(m_key, np.nan)
+            
+            if d_growth is not None and np.isfinite(metric_val) and np.isfinite(d_growth):
+                x_data.append(metric_val)
+                y_data.append(d_growth)
+                
+                ax.scatter(
+                    metric_val, 
+                    d_growth, 
+                    color=color_map[model_key], 
+                    s=100, 
+                    zorder=3,
+                    edgecolor='white',
+                    linewidth=0.5
+                )
+                
+        if len(x_data) >= 2:
+            x_arr = np.array(x_data)
+            y_arr = np.array(y_data)
+            m, b = np.polyfit(x_arr, y_arr, 1)
+            
+            if m_key in ['r2', 'pearson_r', 'srcc'] and corr_xlim is not None:
+                x_line = np.array(corr_xlim)
+            elif m_key in ['rmse', 'mae'] and err_xlim is not None:
+                x_line = np.array(err_xlim)
+            else:
+                x_line = np.array([np.min(x_arr), np.max(x_arr)])
+                
+            y_line = m * x_line + b
+            ax.plot(x_line, y_line, color='black', linewidth=1.5, linestyle='-', zorder=2)
+            
+            if show_fit_r2:
+                y_pred_fit = m * x_arr + b
+                ss_res = np.sum((y_arr - y_pred_fit) ** 2)
+                ss_tot = np.sum((y_arr - np.mean(y_arr)) ** 2)
+                r2_fit = 1 - (ss_res / ss_tot) if ss_tot != 0 else np.nan
+                
+                if np.isfinite(r2_fit):
+                    x_pos = 0.05 if m >= 0 else 0.95
+                    h_align = 'left' if m >= 0 else 'right'
+                    
+                    ax.text(
+                        x_pos, 0.95,
+                        f"Fit $R^2$: {r2_fit:.2f}",
+                        transform=ax.transAxes,
+                        fontsize=10,
+                        verticalalignment='top',
+                        horizontalalignment=h_align,
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="gray", alpha=0.8),
+                        zorder=4
+                    )
+            
+        ax.set_xlabel(m_label, fontsize=11)
+        
+        if m_key in ['r2', 'pearson_r', 'srcc'] and corr_xlim is not None:
+            ax.set_xlim(corr_xlim)
+        elif m_key in ['rmse', 'mae'] and err_xlim is not None:
+            ax.set_xlim(err_xlim)
+        
+        ax.yaxis.set_major_formatter(ticker.PercentFormatter(xmax=1.0))
+        
+        if i % 3 != 0:
+            ax.tick_params(left=False, labelleft=False)
+
+    fig.supylabel(r"$\Delta$ Growth", fontsize=14)
+
+    legend_ax = axes[5]
+    legend_ax.axis('off')
+    
+    handles = [
+        plt.Line2D(
+            [0], [0], 
+            marker='o', 
+            color='w', 
+            markerfacecolor=color_map[key], 
+            markersize=10, 
+            label=name
+        ) 
+        for key, name in model_names.items()
+    ]
+    
+    legend_ax.legend(
+        handles=handles, 
+        loc='center', 
+        title="Model", 
+        title_fontsize=13,
+        fontsize=11,
+        frameon=False,
+        ncol=1
+    )
+
+    sns.despine()
+    plt.tight_layout()
+
+    if save:
+        metric_space_label = "log10" if log_scale else "linear"
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "delta_growth_scatter_plots",
+            f"delta_growth_vs_metrics_{metric_space_label}.png"
+        )
+        if save_target is not None:
+            plt.savefig(
+                str(save_target),
+                dpi=300,
+                bbox_inches='tight',
+                transparent=False
+            )
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+
+
 def confidence_ellipse(x, y, ax, n_std=3.0, facecolor='none', **kwargs):
     """
     Source: https://matplotlib.org/stable/gallery/statistics/confidence_ellipse.html
@@ -1049,7 +1283,8 @@ def plot_model_comparison(
     show_stats: bool = True,
     show_ellipse_stats: bool = False,
     show_c_bar: bool = True,
-    ellipse_stats_position: str = 'upper_right'
+    ellipse_stats_position: str = 'upper_right',
+    show_title: bool = True
 ):
     """
     Generate a square-aspect hexbin plot comparing two sets of kcat values.
@@ -1328,8 +1563,8 @@ def plot_model_comparison(
     ax.set_yticks(ellipse_y_bounds, minor=True)
     ax.tick_params(which='minor', color='red', length=8, width=2, direction='in')
 
-    
-    plt.title(f"{model_x_name} vs {model_y_name}", fontsize=16, fontweight='bold')
+    if show_title:
+        plt.title(f"{model_x_name} vs {model_y_name}", fontsize=16, fontweight='bold')
     
     plt.tight_layout()
 
@@ -1620,8 +1855,7 @@ def plot_ec_class_enrichment(
     else:
         plt.close(fig)
 
-
-
+    
 def plot_model_intersection_sets(
     df: pd.DataFrame,
     model_names: dict[str, str],
@@ -1631,7 +1865,7 @@ def plot_model_intersection_sets(
     save: bool = False,
     save_path: Optional[Union[str, Path]] = None,
     show: bool = True
-) -> None:
+) -> tuple[pd.Series, pd.Series]:
     """
     Generate an UpSet plot visualizing the intersection of model performance subsets.
 
@@ -1673,11 +1907,16 @@ def plot_model_intersection_sets(
       and extract Reaction IDs.
     """
 
-    model_sets = get_performance_subsets(df, list(model_names.keys()), threshold_value=threshold_value, threshold_mode=threshold_mode, subset_type=subset_type)
+    model_sets = get_performance_subsets(
+        df, 
+        list(model_names.keys()), 
+        threshold_value=threshold_value, 
+        threshold_mode=threshold_mode, 
+        subset_type=subset_type
+    )
 
     if not model_sets or all(len(s) == 0 for s in model_sets.values()):
-        logger.error("Error: No data to plot.")
-        return
+        return pd.Series(dtype=int), pd.Series(dtype=int)
 
     plot_ready_sets = {}
     for old_name, reaction_set in model_sets.items():
@@ -1734,6 +1973,7 @@ def plot_model_intersection_sets(
         title_text = f"Intersection of predictions {relation} {threshold_value} log10 error"
 
     plt.suptitle(title_text, fontsize=24, fontweight='bold')
+    
     if save:
         if threshold_mode == 'percentile':
             file_suffix = f"{int(threshold_value)}pct"
@@ -1759,8 +1999,12 @@ def plot_model_intersection_sets(
                 bbox_inches='tight',
                 transparent=False
             )
+            
     if show:
         plt.show()
     else:
         plt.close(fig)
-        
+
+    set_sizes = pd.Series({name: len(items) for name, items in plot_ready_sets.items()})
+    
+    return upset.intersections, set_sizes
