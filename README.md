@@ -1,9 +1,8 @@
-# Evaluating the performance of kcat prediction tools and their impact on enzyme-constrained genome-scale metabolic models
+# kcatbench Toolbox
 
-This is a Master Thesis project conducted as part of the Master's in [Systems Biology & Bioinformatics](https://www.maastrichtuniversity.nl/education/master/programmes/systems-biology-and-bioinformatics) at Maastricht University. The project is carried out at the Reasearch Group for [Biochemical Network Analysis](https://chemnet.univie.ac.at/) in the Department of Analytical Chemistry at the University of Vienna.
 
 ## Project Information
-This project is aimed to provide easy and automated installation for **kcat prediction models**. It also provides some benchmarking and visualization tools to compare the performance between the models.
+This project is aimed to provide easy and automated installation for **kcat prediction models**. It also provides benchmarking and visualization tools to compare the performance between the models.
 
 ### Current Models
 | Model  | Location        | Source Repository                                                                    |

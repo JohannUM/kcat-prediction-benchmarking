@@ -32,9 +32,11 @@ data/MMKcat/*
 
 data/brenda/*
 !data/brenda/.gitkeep
+!data/brenda/brenda_filtered.csv
 
 data/enzyextract/*
 !data/enzyextract/.gitkeep
+!data/enzyextract/enzy_extract_processed.csv
 
 results/plots/*
 !results/plots/.gitkeep
