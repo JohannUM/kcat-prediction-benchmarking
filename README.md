@@ -1,7 +1,5 @@
-[![DOI](https://zenodo.org/badge/1098238589.svg)](https://doi.org/10.5281/zenodo.20513342)
-
 # kcatbench Toolbox
-
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.20513342-blue.svg)](https://doi.org/10.5281/zenodo.20513342)
 
 ## Project Information
 This project is aimed to provide easy and automated installation for **kcat prediction models**. It also provides benchmarking and visualization tools to compare the performance between the models.
