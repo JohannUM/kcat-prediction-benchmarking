@@ -4,18 +4,21 @@ import numpy as np
 import pandas as pd
 import logging
 import warnings
+import re
 import matplotlib.transforms as transforms
 import matplotlib.ticker as ticker
-from matplotlib.patches import Ellipse
+from matplotlib.patches import Ellipse, Patch
 from matplotlib.ticker import FuncFormatter
-from matplotlib.colors import LinearSegmentedColormap, Colormap, Normalize
+from matplotlib.colors import LinearSegmentedColormap, Colormap, Normalize, to_rgb
 from matplotlib.cm import ScalarMappable
+from matplotlib.lines import Line2D
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
 from scipy.stats import pearsonr, spearmanr
 from pathlib import Path
 from typing import Optional, Union
 from upsetplot import from_contents, UpSet
 from kcatbench.util import RESULT_DIR
+from matplotlib.offsetbox import AnnotationBbox, HPacker, TextArea
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +125,43 @@ def _resolve_save_target(
     return target_path
 
 
+def _parse_sequence_similarity_label(label: str) -> Optional[tuple[str, str]]:
+    """Parse a sequence-similarity label into dataset and bin identifiers."""
+    label_text = str(label)
+    dataset_name = 'EnzyExtract' if label_text.startswith('enzy_') else 'BRENDA'
+    core_label = label_text[5:] if label_text.startswith('enzy_') else label_text
+
+    if core_label == 'mean_seq':
+        return dataset_name, 'mean_seq'
+
+    match = re.search(r'alignment_(\d+)(?:_(\d+))?$', core_label)
+    if match is None:
+        return None
+
+    lower = int(match.group(1))
+    upper = match.group(2)
+
+    if upper is None:
+        if lower != 100:
+            return None
+        bin_label = '100%'
+    else:
+        bin_label = f'{lower}%-<{upper}%'
+
+    return dataset_name, bin_label
+
+
+def _format_sequence_similarity_value(value: float, value_mode: str) -> str:
+    """Format a sequence-similarity bin value for in-bar annotation."""
+    if value_mode == 'percent':
+        return f'{value:.1f}%'
+
+    if np.isclose(value, round(value)):
+        return f'{int(round(value)):,}'
+
+    return f'{value:.1f}'
+
+
 def plot_standalone_colorbar(
     vmin: float,
     vmax: float,
@@ -223,8 +263,64 @@ def plot_dual_dataset_correlation_heatmap(
     y_axis_right: bool = False,
     save: bool = False,
     save_path: Optional[Union[str, Path]] = None,
-    show: bool = True
+    show: bool = True,
+    cmap_colors: Optional[list[str]] = None,
+    model_colors: Optional[dict[str, str]] = None
 ) -> None:
+    """
+    Plot a dual-dataset correlation heatmap for model predictions.
+
+    This function calculates intra-model prediction correlations for two distinct
+    datasets using Pearson or Spearman metrics. It packs both correlation matrices 
+    into a single square grid split along the counter-diagonal: the upper-left 
+    triangle represents dataset 1, and the lower-right triangle represents dataset 2.
+
+    Parameters
+    ----------
+    dataset_1 : pd.DataFrame
+        The first input dataset containing model prediction columns.
+    dataset_name_1 : str
+        Display name for the first dataset, rendered at the top of the plot.
+    dataset_2 : pd.DataFrame
+        The second input dataset containing model prediction columns.
+    dataset_name_2 : str
+        Display name for the second dataset, rendered on the right of the plot.
+    model_names : dict[str, str]
+        Mapping from model identifier keys to their human-readable display names.
+    metric : str, default 'pearson'
+        Correlation metric to compute. Options are 'pearson', 'srcc', or 'spearman'.
+    log_scale : bool, default True
+        If True, transforms data to log10 space before calculating correlations.
+    vmin : float, default 0.0
+        Minimum value bound anchor for the colormap data scale.
+    vmax : float, default 1.0
+        Maximum value bound anchor for the colormap data scale.
+    y_axis_right : bool, default False
+        If True, shifts the Y-axis tick labels and spine to the right side.
+    save : bool, default False
+        If True, saves the generated figure to disk.
+    save_path : str or Path, optional
+        Custom directory path or complete file path string to override default save tracking.
+    show : bool, default True
+        If True, displays the plot interactively using plt.show().
+    cmap_colors : list[str], optional
+        Custom color list for color mapping. If 2 colors are provided, a dual-gradient layout
+        is applied (white-to-color1 for dataset 1, white-to-color2 for dataset 2). If 3 colors
+        are provided, a unified global linear colormap gradient is generated across both triangles.
+    model_colors : dict[str, str], optional
+        Mapping from model identifier keys to valid color strings. If provided, colors the 
+        respective model label strings on both the X and Y axes.
+
+    Returns
+    -------
+    None
+        Renders or saves the plot configuration directly.
+
+    Raises
+    ------
+    ValueError
+        If an invalid correlation metric or fewer than two models are provided.
+    """
     if metric.lower() not in ['pearson', 'srcc', 'spearman']:
         raise ValueError("metric must be 'pearson' or 'srcc'")
         
@@ -277,26 +373,90 @@ def plot_dual_dataset_correlation_heatmap(
     fig, ax = plt.subplots(figsize=(fig_size, fig_size))
     sns.set_style("ticks")
 
-    cmap = sns.color_palette("rocket", as_cmap=True)
-    cmap.set_bad("gray")
-    mask = np.isnan(combined_matrix)
+    base_mask = np.isnan(combined_matrix)
 
-    sns.heatmap(
-        combined_matrix,
-        ax=ax,
-        cmap=cmap,
-        mask=mask,
-        vmin=vmin,
-        vmax=vmax,
-        cbar=False,
-        linewidths=0.5,
-        linecolor='white'
-    )
+    if y_axis_right:
+        sns.despine(left=True, right=False, top=True, bottom=False)
+        ax.yaxis.tick_right()                  
+        ax.yaxis.set_label_position("right")
+        ax.tick_params(
+            axis='y',        
+            right=True,     
+            left=False
+        )
+    else:
+        sns.despine()
+
+    from matplotlib.colors import LinearSegmentedColormap
+
+    if cmap_colors and len(cmap_colors) == 2:
+        grid_i, grid_j = np.indices((n_models, n_models))
+        is_ds1 = (grid_i + grid_j) < (n_models - 1)
+        is_ds2 = (grid_i + grid_j) > (n_models - 1)
+
+        cmap1 = LinearSegmentedColormap.from_list("ds1_white_color", ["#FFFFFF", cmap_colors[0]])
+        cmap1.set_bad("gray")
+        mask1 = base_mask | ~is_ds1
+        sns.heatmap(
+            combined_matrix,
+            ax=ax,
+            cmap=cmap1,
+            mask=mask1,
+            vmin=vmin,
+            vmax=vmax,
+            cbar=False,
+            linewidths=0.5,
+            linecolor='white'
+        )
+
+        cmap2 = LinearSegmentedColormap.from_list("ds2_white_color", ["#FFFFFF", cmap_colors[1]])
+        cmap2.set_bad(color='none') 
+        mask2 = base_mask | ~is_ds2
+        sns.heatmap(
+            combined_matrix,
+            ax=ax,
+            cmap=cmap2,
+            mask=mask2,
+            vmin=vmin,
+            vmax=vmax,
+            cbar=False,
+            linewidths=0.5,
+            linecolor='white'
+        )
+    else:
+        if cmap_colors and len(cmap_colors) == 3:
+            cmap = LinearSegmentedColormap.from_list("blue_white_red", cmap_colors)
+        else:
+            cmap = sns.color_palette("rocket", as_cmap=True)
+        cmap.set_bad("gray")
+        
+        sns.heatmap(
+            combined_matrix,
+            ax=ax,
+            cmap=cmap,
+            mask=base_mask,
+            vmin=vmin,
+            vmax=vmax,
+            cbar=False,
+            linewidths=0.5,
+            linecolor='white'
+        )
 
     ax.plot([0, n_models], [n_models, 0], color='white', linewidth=1, zorder=5)
 
-    ax.set_xticklabels(reversed_display_names, rotation=45, ha='right', fontsize=11)
-    ax.set_yticklabels(ordered_display_names, rotation=0, fontsize=11)
+    xtick_objs = ax.set_xticklabels(reversed_display_names, rotation=45, ha='right', fontsize=14)
+    ytick_objs = ax.set_yticklabels(ordered_display_names, rotation=0, fontsize=14)
+
+    if model_colors:
+        for tick_label, model_key in zip(ytick_objs, all_model_keys):
+            color = model_colors.get(model_key)
+            if color:
+                tick_label.set_color(color)
+                
+        for tick_label, model_key in zip(xtick_objs, all_model_keys[::-1]):
+            color = model_colors.get(model_key)
+            if color:
+                tick_label.set_color(color)
 
     for row_idx in range(n_models):
         for col_idx in range(n_models):
@@ -304,7 +464,11 @@ def plot_dual_dataset_correlation_heatmap(
             if not np.isfinite(raw_value):
                 continue
                 
-            text_color = 'white' if abs(raw_value) < 0.5 else 'black'
+            if cmap_colors:
+                text_color = 'black'
+            else:
+                text_color = 'white' if abs(raw_value) < 0.5 else 'black'
+                
             formatted_val = f"{raw_value:.2f}" 
             
             ax.text(
@@ -313,19 +477,9 @@ def plot_dual_dataset_correlation_heatmap(
                 formatted_val,
                 ha='center',
                 va='center',
-                fontsize=9,
+                fontsize=12,
                 color=text_color
             )
-
-    ax.set_xlabel("Model", fontsize=12)
-    ax.set_ylabel("Model", fontsize=12)
-
-    if y_axis_right:
-        ax.yaxis.tick_right()                  
-        ax.yaxis.set_label_position("right")
-        sns.despine(left=True, right=False, top=True, bottom=False)
-    else:
-        sns.despine()
 
     ax.text(
         0.5,
@@ -334,11 +488,11 @@ def plot_dual_dataset_correlation_heatmap(
         transform=ax.transAxes,
         ha='center',
         va='bottom',
-        fontsize=13,
+        fontsize=14,
         fontweight='bold'
     )
 
-    x_offset_ds2 = 1.25 if y_axis_right else 1.05
+    x_offset_ds2 = 1.25 if y_axis_right else 1.01
     ax.text(
         x_offset_ds2,
         0.5,
@@ -347,7 +501,7 @@ def plot_dual_dataset_correlation_heatmap(
         ha='left',
         va='center',
         rotation=-90,
-        fontsize=13,
+        fontsize=14,
         fontweight='bold'
     )
 
@@ -684,10 +838,13 @@ def plot_metric_heatmap_across_datasets(
     y_axis_right: bool = False,
     save: bool = False,
     save_path: Optional[Union[str, Path]] = None,
-    show: bool = True
+    show: bool = True,
+    show_dataset_labels: bool = True,
+    cmap_colors: Optional[list[str]] = None,
+    model_colors: Optional[dict[str, str]] = None
 ) -> None:
     """
-    Plot a metric heatmap across datasets and models.
+    Plot a metric heatmap across datasets and models with customized styling.
 
     The function computes R2, Pearson r, SRCC, RMSE, and MAE between each
     model prediction column and experimental_kcat for every dataset, then
@@ -710,14 +867,22 @@ def plot_metric_heatmap_across_datasets(
     log_scale : bool, default True
         If True, computes metrics in log10 space after filtering positive values.
         If False, computes metrics on raw values.
+    y_axis_right : bool, default False
+        If True, moves the model labels to the right side of the plot.
     save : bool, default False
         If True, saves figure under results/plots/metric_heatmap_plots.
     save_path : str or Path, optional
-        If provided, overrides the save directory or full file path. If a
-        directory is provided, the default filename is used. If a filename
-        is provided, it is used directly. Ignored when save is False.
+        If provided, overrides the save directory or full file path.
     show : bool, default True
         If True, displays the figure; otherwise closes it.
+    show_dataset_labels : bool, default True
+        If True, renders the dataset names above their respective column groupings.
+    cmap_colors : list[str], optional
+        A list containing exactly two color strings (e.g., ['blue', 'red']) to 
+        generate a custom linear gradient. If None, defaults to 'rocket'.
+    model_colors : dict[str, str], optional
+        Mapping from model identifier to a color string. If provided, the y-axis
+        label for that model will be colored accordingly.
 
     Returns
     -------
@@ -727,8 +892,7 @@ def plot_metric_heatmap_across_datasets(
     Raises
     ------
     ValueError
-        If experimental_kcat is missing or input arguments are invalid. Missing
-        model columns are allowed and rendered as black cells with no annotation.
+        If experimental_kcat is missing or input arguments are invalid.
     """
     if len(datasets) == 0:
         raise ValueError("datasets must contain at least one dataframe.")
@@ -866,13 +1030,33 @@ def plot_metric_heatmap_across_datasets(
         normalized = np.where(np.isfinite(values), normalized, np.nan)
         norm_matrix[:, metric_idx::n_metrics] = normalized
 
+    best_rows_per_col = {}
+    for col_idx in range(n_cols):
+        metric_key = metric_keys[col_idx % n_metrics]
+        col_vals = raw_matrix[:, col_idx]
+        valid_mask = np.isfinite(col_vals)
+        if np.any(valid_mask):
+            if metric_key in invert_metrics:
+                best_val = np.nanmin(col_vals[valid_mask])
+            else:
+                best_val = np.nanmax(col_vals[valid_mask])
+            best_rows_per_col[col_idx] = np.where(np.isclose(col_vals, best_val))[0]
+        else:
+            best_rows_per_col[col_idx] = []
+
     fig_width = max(6, 0.6 * n_cols + 2)
     fig_height = max(5, 0.35 * n_models + 2)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
     sns.set_style("ticks")
 
-    cmap = sns.color_palette("rocket", as_cmap=True)
+    if cmap_colors and len(cmap_colors) == 2:
+        from matplotlib.colors import LinearSegmentedColormap
+        color_list = [cmap_colors[0], '#FFFFFF', cmap_colors[1]]
+        cmap = LinearSegmentedColormap.from_list("blue_white_red", color_list)
+    else:
+        cmap = sns.color_palette("rocket", as_cmap=True)
     cmap.set_bad("gray")
+    
     mask = np.isnan(norm_matrix)
     sns.heatmap(
         norm_matrix,
@@ -884,67 +1068,80 @@ def plot_metric_heatmap_across_datasets(
         linecolor='white'
     )
 
+    if y_axis_right:
+        sns.despine(left=True, right=False, top=True, bottom=False)
+        ax.yaxis.tick_right()                  
+        ax.yaxis.set_label_position("right")
+        ax.tick_params(
+            axis='y',        
+            right=True,     
+            left=False
+        )
+    else:
+        sns.despine()
+
     xtick_labels = []
     for _ in dataset_names:
         xtick_labels.extend(metric_labels)
 
-    ax.set_xticklabels(xtick_labels, rotation=0, ha='center', fontsize=10)
-    ax.set_yticklabels(
+    ax.set_xticklabels(xtick_labels, rotation=0, ha='center', fontsize=14)
+    
+    ytick_objs = ax.set_yticklabels(
         [model_names[model_key] for model_key in ordered_model_keys],
         rotation=0,
-        fontsize=11
+        fontsize=14
     )
+
+    if model_colors:
+        for tick_label, model_key in zip(ytick_objs, ordered_model_keys):
+            color = model_colors.get(model_key)
+            if color:
+                tick_label.set_color(color)
 
     for boundary in range(1, n_datasets):
         ax.axvline(boundary * n_metrics, color='black', linewidth=1.5)
 
-    for dataset_idx, dataset_name in enumerate(dataset_names):
-        center = (dataset_idx * n_metrics + n_metrics / 2) / n_cols
-        ax.text(
-            center,
-            1.02,
-            dataset_name,
-            transform=ax.transAxes,
-            ha='center',
-            va='bottom',
-            fontsize=11,
-            fontweight='bold'
-        )
+    if show_dataset_labels:
+        for dataset_idx, dataset_name in enumerate(dataset_names):
+            center = (dataset_idx * n_metrics + n_metrics / 2) / n_cols
+            ax.text(
+                center,
+                1.02,
+                dataset_name,
+                transform=ax.transAxes,
+                ha='center',
+                va='bottom',
+                fontsize=14,
+                fontweight='bold'
+            )
 
     for row_idx in range(n_models):
         for col_idx in range(n_cols):
             raw_value = raw_matrix[row_idx, col_idx]
             if not np.isfinite(raw_value):
                 continue
-            color_value = norm_matrix[row_idx, col_idx]
-            text_color = 'white' if np.isfinite(color_value) and color_value < 0.5 else 'black'
+
+            if cmap_colors and len(cmap_colors) == 2:
+                text_color = 'black'
+            else: 
+                color_value = norm_matrix[row_idx, col_idx]
+                text_color = 'white' if np.isfinite(color_value) and color_value < 0.5 else 'black'
+            
+            is_best = row_idx in best_rows_per_col.get(col_idx, [])
+            font_weight = 'bold' if is_best else 'normal'
+            
             ax.text(
                 col_idx + 0.5,
                 row_idx + 0.5,
                 _format_metric(raw_value),
                 ha='center',
                 va='center',
-                fontsize=9,
-                color=text_color
+                fontsize=12,
+                color=text_color,
+                fontweight=font_weight
             )
 
-    ax.set_xlabel("Metrics", fontsize=12)
-    ax.set_ylabel("Model", fontsize=12)
-
     metric_space_label = "log10" if log_scale else "linear"
-    # ax.set_title(
-    #     f"Model metrics across datasets ({metric_space_label} space)",
-    #     fontsize=15,
-    #     fontweight='bold',
-    #     pad=35
-    # )
-
-    if(y_axis_right):
-        ax.yaxis.tick_right()                  
-        ax.yaxis.set_label_position("right")
-        sns.despine(left=True, right=False)
-    else:
-        sns.despine()
 
     plt.tight_layout()
     fig.subplots_adjust(top=0.86)
@@ -979,8 +1176,53 @@ def plot_metric_vs_delta_growth(
     show_fit_r2: bool = True,
     save: bool = False,
     save_path: Optional[Union[str, Path]] = None,
-    show: bool = True
+    show: bool = True,
+    model_colors: Optional[dict[str, str]] = None
 ) -> None:
+    """
+    Plot the relationship between prediction metrics and delta growth across models.
+
+    This function evaluates model performance metrics (R2, Pearson r, SRCC, RMSE, MAE) 
+    against a given delta growth parameter. It generates a multi-panel scatter plot matrix 
+    showing the correlation between each metric and the growth differential, along 
+    with a linear fit and optional R2 of the trendline.
+
+    Parameters
+    ----------
+    dataset : pd.DataFrame
+        The input dataset containing experimental ground truth and model predictions.
+    model_names : dict[str, str]
+        Mapping from model identifier keys to their human-readable display names.
+    delta_growth : dict[str, float]
+        Dictionary mapping model identifiers or columns to their corresponding delta 
+        growth values.
+    log_scale : bool, default True
+        If True, transforms values to log10 space before calculating metrics.
+    show_fit_r2 : bool, default True
+        If True, computes and displays the R2 coefficient of the linear regression line 
+        within each subplot panel.
+    save : bool, default False
+        If True, saves the generated figure to disk.
+    save_path : str or Path, optional
+        Custom directory path or complete file path string to override default save tracking.
+    show : bool, default True
+        If True, displays the plot interactively using plt.show().
+    model_colors : dict[str, str], optional
+        Mapping from model identifier keys to valid color strings. If provided, 
+        dictates the color of scatter points and legend representation for each model.
+        Falls back to the 'husl' palette if a key is missing or if None.
+
+    Returns
+    -------
+    None
+        Renders or saves the plot configuration directly.
+
+    Raises
+    ------
+    ValueError
+        If the dataset is not a pandas DataFrame, missing the required 'experimental_kcat' 
+        column, or if model_names is empty.
+    """
     if not isinstance(dataset, pd.DataFrame):
         raise ValueError("dataset must be a pandas DataFrame.")
         
@@ -1038,9 +1280,14 @@ def plot_metric_vs_delta_growth(
     axes = axes.flatten()
     sns.set_style("ticks")
     
-    colors = sns.color_palette("husl", n_colors=len(model_names))
-    color_map = {key: color for key, color in zip(model_names.keys(), colors)}
-    
+    fallback_colors = sns.color_palette("husl", n_colors=len(model_names))
+    color_map = {}
+    for idx, key in enumerate(model_names.keys()):
+        if model_colors and key in model_colors:
+            color_map[key] = model_colors[key]
+        else:
+            color_map[key] = fallback_colors[idx]
+            
     corr_min = float('inf')
     corr_max = float('-inf')
     
@@ -1535,15 +1782,15 @@ def plot_model_comparison(
             y_text,
             ellipse_stats_text,
             transform=ax.transAxes,
-            fontsize=13,
+            fontsize=16,
             horizontalalignment=ha,
             verticalalignment=va,
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.85)
         )
 
     if log_scale:
-        plt.xlabel(f"{model_x_name} $k_{{cat}}$ ($s^{{-1}}$) [log scale]", fontsize=14)
-        plt.ylabel(f"{model_y_name} $k_{{cat}}$ ($s^{{-1}}$) [log scale]", fontsize=14)
+        plt.xlabel(f"{model_x_name} $k_{{cat}}$ ($s^{{-1}}$) [log scale]", fontsize=16)
+        plt.ylabel(f"{model_y_name} $k_{{cat}}$ ($s^{{-1}}$) [log scale]", fontsize=16)
 
         log_formatter = FuncFormatter(lambda x, pos: f"$10^{{{x:g}}}$")
         
@@ -1562,6 +1809,8 @@ def plot_model_comparison(
     ax.set_xticks(ellipse_x_bounds, minor=True)
     ax.set_yticks(ellipse_y_bounds, minor=True)
     ax.tick_params(which='minor', color='red', length=8, width=2, direction='in')
+
+    ax.tick_params(which='major', labelsize=14, length=6, width=2)
 
     if show_title:
         plt.title(f"{model_x_name} vs {model_y_name}", fontsize=16, fontweight='bold')
@@ -1588,6 +1837,834 @@ def plot_model_comparison(
         plt.close(fig)
 
     return axis_ratio, ellipse_x_bounds, ellipse_y_bounds
+
+
+
+def plot_log10_error_distribution(
+    df: pd.DataFrame,
+    model_names: dict[str, str],
+    model_colors: Optional[dict[str, str]] = None,
+    save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
+    show: bool = True,
+    indicators: Optional[list[float]] = None,
+    absolute_errors: bool = True
+) -> None:
+    """
+    Plot the distribution of absolute log10 errors across models.
+
+    This function calculates the absolute difference between the log10-transformed
+    predicted and experimental values. By evaluating the absolute magnitude of 
+    the log10 error, it visualizes the overall scale of model deviation (fold-change 
+    distance from the true value) without distinguishing between overprediction 
+    and underprediction.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The input dataset containing experimental ground truth and model predictions.
+    model_names : dict[str, str]
+        Mapping from model identifier keys to their human-readable display names.
+    model_colors : dict[str, str], optional
+        Mapping from model identifier keys to valid color strings. If provided, 
+        dictates the color of the distribution curve for each model. Falls back 
+        to the 'husl' palette if a key is missing or if None.
+    save : bool, default False
+        If True, saves the generated figure to disk.
+    save_path : str or Path, optional
+        Custom directory path or complete file path string to override default save tracking.
+    show : bool, default True
+        If True, displays the plot interactively using plt.show().
+    indicators : list[float], optional
+        A list of numeric values. For each value, a vertical dashed line is drawn 
+        on the plot if the value falls within the calculated x-axis limits.
+
+    Returns
+    -------
+    None
+        Renders or saves the plot configuration directly.
+
+    Raises
+    ------
+    ValueError
+        If the dataset is missing the required 'experimental_kcat' column or if 
+        model_names is empty.
+    """
+    if 'experimental_kcat' not in df.columns:
+        raise ValueError("Dataset is missing required column 'experimental_kcat'.")
+        
+    if not model_names:
+        raise ValueError("model_names must contain at least one model mapping.")
+
+    resolved_columns = {model_key: _resolve_model_column(model_key) for model_key in model_names}
+    
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.set_style("ticks")
+    
+    fallback_colors = sns.color_palette("husl", n_colors=len(model_names))
+    
+    for idx, (model_key, model_col) in enumerate(resolved_columns.items()):
+        if model_col not in df.columns:
+            continue
+            
+        pair_df = df[['experimental_kcat', model_col]].copy()
+        
+        pair_df['experimental_kcat'] = pair_df['experimental_kcat'].apply(_extract_scalar)
+        pair_df[model_col] = pair_df[model_col].apply(_extract_scalar)
+        
+        pair_df['experimental_kcat'] = pd.to_numeric(pair_df['experimental_kcat'], errors='coerce')
+        pair_df[model_col] = pd.to_numeric(pair_df[model_col], errors='coerce')
+        
+        pair_df = pair_df.dropna()
+        pair_df = pair_df[~pair_df.isin([np.inf, -np.inf]).any(axis=1)]
+        pair_df = pair_df[(pair_df['experimental_kcat'] > 0) & (pair_df[model_col] > 0)]
+        
+        if pair_df.empty:
+            continue
+            
+        log10_true = np.log10(pair_df['experimental_kcat'].to_numpy(dtype=float))
+        log10_pred = np.log10(pair_df[model_col].to_numpy(dtype=float))
+        
+        if absolute_errors:
+            log10_error = np.abs(log10_pred - log10_true)
+            clip = (0.0, None)
+        else:
+            log10_error = log10_pred - log10_true
+            clip = (None, None)
+        
+        if model_colors and model_key in model_colors:
+            curve_color = model_colors[model_key]
+        else:
+            curve_color = fallback_colors[idx]
+            
+        display_name = model_names.get(model_key, model_key)
+        
+        sns.kdeplot(
+            x=log10_error,
+            ax=ax,
+            color=curve_color,
+            label=display_name,
+            linewidth=2,
+            fill=True,
+            alpha=0.1,
+            clip=clip
+        )
+
+    if absolute_errors:
+        ax.set_xlabel(r"Absolute $\log_{10}$ Error", fontsize=12)
+    else:
+        ax.set_xlabel(r"$\log_{10}$ Error", fontsize=12)
+    ax.set_ylabel("Density", fontsize=12)
+
+    x_min, x_max = ax.get_xlim()
+    if absolute_errors:
+        ax.set_xlim(left=0.0)
+    
+    if indicators:
+        for ind in indicators:
+            if x_min <= ind <= x_max:
+                ax.axvline(x=ind, color='black', linestyle='--', linewidth=1.5, zorder=1)
+
+    ax.legend(title="Model", frameon=False, loc='best')
+    sns.despine()
+    plt.tight_layout()
+
+    if save:
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "error_distributions",
+            "absolute_log10_error_distribution.png"
+        )
+        if save_target is not None:
+            plt.savefig(str(save_target), dpi=300, bbox_inches='tight', transparent=False)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+
+def plot_log10_values_distribution(
+    df: pd.DataFrame,
+    model_names: dict[str, str],
+    model_colors: Optional[dict[str, str]] = None,
+    save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
+    show: bool = True,
+    indicators: Optional[list[float]] = None
+) -> None:
+    """
+    Plot and compare the log10 distributions of experimental values and model predictions.
+
+    This function visualizes the overall profile of ground truth experimental kcat 
+    values alongside the predicted values from each specified model. By transforming 
+    the data into log10 space and rendering smooth Kernel Density Estimate (KDE) curves, 
+    it provides a direct visual assessment of whether models accurately capture the 
+    true spread, dynamic range, and modality of the experimental data.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The input dataset containing experimental ground truth and model predictions.
+    model_names : dict[str, str]
+        Mapping from model identifier keys to their human-readable display names.
+    model_colors : dict[str, str], optional
+        Mapping from model identifier keys to valid color strings. If provided, 
+        dictates the color of the distribution curve for each model. Falls back 
+        to the 'husl' palette if a key is missing or if None.
+    save : bool, default False
+        If True, saves the generated figure to disk.
+    save_path : str or Path, optional
+        Custom directory path or complete file path string to override default save tracking.
+    show : bool, default True
+        If True, displays the plot interactively using plt.show().
+    indicators : list[float], optional
+        A list of numeric values. For each value, a vertical dashed line is drawn 
+        on the plot if the value falls within the calculated x-axis limits.
+
+    Returns
+    -------
+    None
+        Renders or saves the plot configuration directly.
+
+    Raises
+    ------
+    ValueError
+        If the dataset is missing the required 'experimental_kcat' column or if 
+        model_names is empty.
+    """
+    if 'experimental_kcat' not in df.columns:
+        raise ValueError("Dataset is missing required column 'experimental_kcat'.")
+        
+    if not model_names:
+        raise ValueError("model_names must contain at least one model mapping.")
+
+    resolved_columns = {model_key: _resolve_model_column(model_key) for model_key in model_names}
+    
+    fig, ax = plt.subplots(figsize=(8, 5))
+    sns.set_style("ticks")
+    
+    fallback_colors = sns.color_palette("husl", n_colors=len(model_names))
+    
+    exp_series = df['experimental_kcat'].apply(_extract_scalar)
+    exp_series = pd.to_numeric(exp_series, errors='coerce').dropna()
+    exp_series = exp_series[~exp_series.isin([np.inf, -np.inf])]
+    exp_series = exp_series[exp_series > 0]
+    
+    if not exp_series.empty:
+        log10_exp = np.log10(exp_series.to_numpy(dtype=float))
+        sns.kdeplot(
+            x=log10_exp,
+            ax=ax,
+            color="#7F7F7F",
+            label='Experimental',
+            linewidth=2.5,
+            linestyle='-',
+            fill=True,
+            alpha=0.05,
+            zorder=2
+        )
+
+    for idx, (model_key, model_col) in enumerate(resolved_columns.items()):
+        if model_col not in df.columns:
+            continue
+            
+        model_series = df[model_col].apply(_extract_scalar)
+        model_series = pd.to_numeric(model_series, errors='coerce').dropna()
+        model_series = model_series[~model_series.isin([np.inf, -np.inf])]
+        model_series = model_series[model_series > 0]
+        
+        if model_series.empty:
+            continue
+            
+        log10_pred = np.log10(model_series.to_numpy(dtype=float))
+        
+        if model_colors and model_key in model_colors:
+            curve_color = model_colors[model_key]
+        else:
+            curve_color = fallback_colors[idx]
+            
+        display_name = model_names.get(model_key, model_key)
+        
+        sns.kdeplot(
+            x=log10_pred,
+            ax=ax,
+            color=curve_color,
+            label=display_name,
+            linewidth=2,
+            fill=True,
+            alpha=0.1,
+            zorder=3
+        )
+
+    ax.set_xlabel(r"$\log_{10}(k_{\text{cat}} \text{ s}^{-1})$", fontsize=12)
+    ax.set_ylabel("Density", fontsize=12)
+   
+    x_min, x_max = ax.get_xlim()
+    
+    if indicators:
+        for ind in indicators:
+            if x_min <= ind <= x_max:
+                ax.axvline(x=ind, color='black', linestyle='--', linewidth=1.5, zorder=1)
+
+    ax.legend(title="Data Source", frameon=False, loc='best')
+    sns.despine()
+    plt.tight_layout()
+
+    if save:
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / "plots" / "value_distributions",
+            "log10_kcat_value_distribution.png"
+        )
+        if save_target is not None:
+            plt.savefig(str(save_target), dpi=300, bbox_inches='tight', transparent=False)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+
+def plot_sequence_similarity_results(
+    df: pd.DataFrame,
+    model_names: dict[str, str],
+    combined_model_keys: Optional[tuple[str, str]] = None,
+    value_mode: str = 'count',
+    gradient_colors: tuple[str, str] = ("#FFFFFF", "#990F0F"),
+    model_colors: Optional[dict[str, str]] = None,
+    bar_height: float = 0.42,
+    enzy_bar_height_ratio: float = 0.8,
+    save: bool = False,
+    save_path: Optional[Union[str, Path]] = None,
+    show: bool = True
+) -> None:
+    """
+    Plot sequence-similarity bin results as paired stacked horizontal bars.
+
+    The input dataframe is expected to contain a leading `label` column that
+    identifies the dataset and bin for each row. Rows whose label starts with
+    `enzy_` are treated as EnzyExtract results; all other rows are treated as
+    BRENDA results. Each model is plotted as a pair of horizontal stacked bars
+    with BRENDA on top and EnzyExtract below it.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input dataframe containing a `label` column and one or more model columns.
+    model_names : dict[str, str]
+        Mapping from dataframe column name to the clean display name shown in the plot.
+    combined_model_keys : tuple[str, str], optional
+        If provided, combine two model keys into one left label of the form
+        `model1 / model2` while plotting only the first model's data.
+    value_mode : str, default 'count'
+        Whether the sequence-similarity values are stored as `count` or `percent`.
+    gradient_colors : tuple[str, str], default ('#E6EEF7', '#0F5B99')
+        Two endpoint colors used to generate the five-bin color gradient.
+    model_colors : dict[str, str], optional
+        Mapping from model column name to label color.
+    bar_height : float, default 0.42
+        Height of the BRENDA bar. The EnzyExtract bar uses this multiplied by
+        `enzy_bar_height_ratio`.
+    enzy_bar_height_ratio : float, default 0.8
+        Relative height of the EnzyExtract bar compared to the BRENDA bar.
+        Values above 1 make EnzyExtract thicker than BRENDA.
+    save : bool, default False
+        If True, saves the figure to disk.
+    save_path : str or Path, optional
+        Save directory or full filename override.
+    show : bool, default True
+        If True, displays the plot; otherwise closes the figure.
+
+    Returns
+    -------
+    None
+        Renders or saves the plot configuration directly.
+    """
+    if not isinstance(df, pd.DataFrame):
+        raise ValueError('df must be a pandas DataFrame.')
+
+    if 'label' not in df.columns:
+        raise ValueError("DataFrame is missing required column 'label'.")
+
+    if not model_names:
+        raise ValueError('model_names must contain at least one model mapping.')
+
+    if combined_model_keys is not None:
+        if not isinstance(combined_model_keys, (tuple, list)) or len(combined_model_keys) != 2:
+            raise ValueError('combined_model_keys must contain exactly two model keys.')
+        combined_model_keys = (combined_model_keys[0], combined_model_keys[1])
+        missing_keys = [key for key in combined_model_keys if key not in model_names]
+        if missing_keys:
+            raise ValueError(
+                'combined_model_keys must reference keys present in model_names. '
+                f"Missing: {', '.join(missing_keys)}"
+            )
+
+    if not isinstance(value_mode, str):
+        raise ValueError(
+            f"value_mode must be a string ('count' or 'percent'), got {type(value_mode).__name__}."
+        )
+
+    value_mode = value_mode.strip().lower()
+    if value_mode not in {'count', 'percent'}:
+        raise ValueError("value_mode must be 'count' or 'percent'.")
+
+    if len(gradient_colors) != 2:
+        raise ValueError('gradient_colors must contain exactly two colors.')
+
+    if bar_height <= 0:
+        raise ValueError('bar_height must be greater than zero.')
+
+    if enzy_bar_height_ratio <= 0:
+        raise ValueError('enzy_bar_height_ratio must be greater than zero.')
+
+    sequence_df = df.copy()
+    parsed_labels = sequence_df['label'].apply(_parse_sequence_similarity_label)
+    sequence_df['__dataset'] = parsed_labels.apply(lambda item: item[0] if item else np.nan)
+    sequence_df['__bin'] = parsed_labels.apply(lambda item: item[1] if item else np.nan)
+
+    ignored_labels = sequence_df.loc[sequence_df['__dataset'].isna() | sequence_df['__bin'].isna(), 'label']
+    if not ignored_labels.empty:
+        logger.warning(
+            'Skipping %d unrecognized sequence similarity labels.',
+            len(ignored_labels)
+        )
+
+    sequence_df = sequence_df.dropna(subset=['__dataset', '__bin']).copy()
+    if sequence_df.empty:
+        raise ValueError('No recognizable sequence similarity rows were found.')
+
+    bin_order = ['0%-<50%', '50%-<70%', '70%-<90%', '90%-<100%', '100%']
+    dataset_order = ['BRENDA', 'EnzyExtract']
+    mean_order = ['BRENDA', 'EnzyExtract']
+
+    resolved_model_keys: list[str] = []
+    for model_key in model_names:
+        if model_key not in sequence_df.columns:
+            logger.warning(
+                "Sequence similarity dataframe is missing model column '%s'. Skipping.",
+                model_key
+            )
+            continue
+        resolved_model_keys.append(model_key)
+
+    combined_secondary_key: Optional[str] = None
+    if combined_model_keys is not None:
+        combined_primary_key, combined_secondary_key = combined_model_keys
+        if combined_primary_key not in resolved_model_keys:
+            raise ValueError(
+                f"combined_model_keys primary key '{combined_primary_key}' is not available in the dataframe."
+            )
+        if combined_secondary_key not in resolved_model_keys:
+            raise ValueError(
+                f"combined_model_keys secondary key '{combined_secondary_key}' is not available in the dataframe."
+            )
+
+    plot_model_keys = [
+        model_key for model_key in resolved_model_keys
+        if model_key != combined_secondary_key
+    ]
+
+    display_model_keys = list(reversed(plot_model_keys))
+
+    if not display_model_keys:
+        raise ValueError('No valid model columns were found in the sequence similarity dataframe.')
+
+    for model_key in resolved_model_keys:
+        sequence_df[model_key] = sequence_df[model_key].apply(_extract_scalar)
+        sequence_df[model_key] = pd.to_numeric(sequence_df[model_key], errors='coerce')
+
+    agg_func = 'sum' if value_mode == 'count' else 'mean'
+    grouped = (
+        sequence_df
+        .groupby(['__dataset', '__bin'], as_index=True)[resolved_model_keys]
+        .agg(agg_func)
+    )
+
+    mean_sequence_df = sequence_df.loc[sequence_df['__bin'] == 'mean_seq'].copy()
+    if not mean_sequence_df.empty:
+        mean_grouped = (
+            mean_sequence_df
+            .groupby(['__dataset'], as_index=True)[resolved_model_keys]
+            .agg('mean')
+        )
+    else:
+        mean_grouped = pd.DataFrame(columns=resolved_model_keys)
+
+    full_index = pd.MultiIndex.from_product(
+        [dataset_order, bin_order],
+        names=['__dataset', '__bin']
+    )
+    grouped = grouped.reindex(full_index)
+
+    plot_values: dict[str, dict[str, dict[str, float]]] = {
+        dataset_name: {
+            model_key: {bin_label: 0.0 for bin_label in bin_order}
+            for model_key in resolved_model_keys
+        }
+        for dataset_name in dataset_order
+    }
+
+    mean_values: dict[str, dict[str, float]] = {
+        dataset_name: {model_key: np.nan for model_key in resolved_model_keys}
+        for dataset_name in mean_order
+    }
+
+    for (dataset_name, bin_label), row in grouped.iterrows():
+        if dataset_name not in plot_values or bin_label not in bin_order:
+            continue
+        for model_key in resolved_model_keys:
+            value = row.get(model_key, np.nan)
+            if pd.notna(value):
+                plot_values[dataset_name][model_key][bin_label] = float(value)
+
+    for dataset_name, row in mean_grouped.iterrows():
+        if dataset_name not in mean_values:
+            continue
+        for model_key in resolved_model_keys:
+            value = row.get(model_key, np.nan)
+            if pd.notna(value):
+                mean_values[dataset_name][model_key] = float(value)
+
+    gradient = LinearSegmentedColormap.from_list(
+        'sequence_similarity_gradient',
+        [gradient_colors[0], gradient_colors[1]],
+        N=len(bin_order)
+    )
+    bin_colors = [gradient(i) for i in np.linspace(0.0, 1.0, len(bin_order))]
+
+    fallback_colors = sns.color_palette('husl', n_colors=len(resolved_model_keys))
+    fallback_color_map = {
+        model_key: fallback_colors[idx]
+        for idx, model_key in enumerate(resolved_model_keys)
+    }
+
+    brenda_bar_height = float(bar_height)
+    enzy_bar_height = float(bar_height) * float(enzy_bar_height_ratio)
+    pair_edge_gap = 0.38
+    divider_edge_gap = 0.78
+    pair_gap = (brenda_bar_height + enzy_bar_height) / 2.0 + pair_edge_gap
+    group_gap = pair_gap + (brenda_bar_height + enzy_bar_height) / 2.0 + (2.0 * divider_edge_gap)
+    bar_total_width = 320.0
+    bar_canvas_width = 328.0
+
+    fig_height = max(4.5, 0.9 * len(display_model_keys) + 2.0)
+    fig = plt.figure(figsize=(17.6, fig_height))
+    grid = fig.add_gridspec(
+        nrows=2,
+        ncols=2,
+        height_ratios=[18, 1.35],
+        width_ratios=[5.9, 0.95],
+        hspace=0.02,
+        wspace=0.02
+    )
+    ax = fig.add_subplot(grid[0, 0])
+    mean_ax = fig.add_subplot(grid[0, 1], sharey=ax)
+    legend_ax = fig.add_subplot(grid[1, 0])
+    spacer_ax = fig.add_subplot(grid[1, 1])
+    legend_ax.axis('off')
+    spacer_ax.axis('off')
+    sns.set_style('ticks')
+
+    max_label_length = max((len(model_names.get(model_key, model_key)) for model_key in plot_model_keys), default=0)
+    label_space = max(10.0, max_label_length * 0.45)
+    label_x = -label_space * 0.32
+
+    def _normalize_bin_widths(values_by_bin: dict[str, float]) -> dict[str, float]:
+        raw_values = np.array([max(float(values_by_bin.get(bin_label, 0.0)), 0.0) for bin_label in bin_order], dtype=float)
+        total_value = float(np.nansum(raw_values))
+        if not np.isfinite(total_value) or total_value <= 0:
+            return {bin_label: 0.0 for bin_label in bin_order}
+
+        scaled = raw_values / total_value * bar_total_width
+        positive_mask = scaled > 0
+        min_segment_width = 10.0
+
+        if np.count_nonzero(positive_mask) and np.any(scaled[positive_mask] < min_segment_width):
+            adjusted = scaled.copy()
+            fixed_mask = positive_mask & (adjusted < min_segment_width)
+            fixed_total = float(np.sum(np.where(fixed_mask, min_segment_width, 0.0)))
+            remaining_width = bar_total_width - fixed_total
+
+            if remaining_width > 0:
+                flexible_mask = positive_mask & ~fixed_mask
+                flexible_total = float(np.sum(adjusted[flexible_mask]))
+
+                if flexible_total > 0:
+                    adjusted[fixed_mask] = min_segment_width
+                    adjusted[flexible_mask] = adjusted[flexible_mask] / flexible_total * remaining_width
+                else:
+                    adjusted[positive_mask] = bar_total_width / np.count_nonzero(positive_mask)
+            else:
+                adjusted[positive_mask] = bar_total_width / np.count_nonzero(positive_mask)
+
+            scaled = adjusted
+
+        return {bin_label: float(width) for bin_label, width in zip(bin_order, scaled)}
+
+    def _text_color_for_fill(fill_color) -> str:
+        rgb = to_rgb(fill_color)
+        luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+        return 'white' if luminance < 0.55 else 'black'
+
+    plotted_totals: list[float] = []
+    bar_extent_mins: list[float] = []
+    bar_extent_maxs: list[float] = []
+    mean_dataset_colors: dict[str, str] = {
+        'BRENDA': gradient_colors[0],
+        'EnzyExtract': gradient_colors[1]
+    }
+
+    def _model_row_y_positions(model_idx: int) -> tuple[float, float, float]:
+        base_y = model_idx * group_gap
+        brenda_y = base_y
+        enzy_y = base_y + pair_gap
+        label_y = base_y + pair_gap / 2.0
+        return brenda_y, enzy_y, label_y
+
+    def _row_separator_y(model_idx: int) -> float:
+        _, enzy_y, _ = _model_row_y_positions(model_idx)
+        return enzy_y + (enzy_bar_height / 2.0) + divider_edge_gap
+
+    def _add_model_label(y_pos: float, model_key: str) -> None:
+        if combined_model_keys is not None and model_key == combined_primary_key:
+            part1 = model_names[combined_primary_key]
+            part2 = model_names[combined_secondary_key]  # type: ignore[index]
+            color1 = model_colors.get(combined_primary_key, fallback_color_map[combined_primary_key]) if model_colors else fallback_color_map[combined_primary_key]
+            color2 = model_colors.get(combined_secondary_key, fallback_color_map[combined_secondary_key]) if model_colors else fallback_color_map[combined_secondary_key]
+
+            label_box = HPacker(
+                children=[
+                    TextArea(part1, textprops={'color': color1, 'fontsize': 13, 'fontweight': 'bold'}),
+                    TextArea(' / ', textprops={'color': '0.25', 'fontsize': 13, 'fontweight': 'bold'}),
+                    TextArea(part2, textprops={'color': color2, 'fontsize': 13, 'fontweight': 'bold'})
+                ],
+                align='center',
+                pad=0,
+                sep=0
+            )
+            ax.add_artist(
+                AnnotationBbox(
+                    label_box,
+                    (label_x, y_pos),
+                    xycoords='data',
+                    frameon=False,
+                    box_alignment=(1.0, 0.5),
+                    annotation_clip=False,
+                    pad=0
+                )
+            )
+            return
+
+        display_name = model_names.get(model_key, model_key)
+        label_color = (
+            model_colors.get(model_key)
+            if model_colors and model_key in model_colors
+            else fallback_color_map[model_key]
+        )
+        ax.text(
+            label_x,
+            y_pos,
+            display_name,
+            ha='right',
+            va='center',
+            fontsize=13,
+            fontweight='bold',
+            color=label_color,
+            clip_on=False
+        )
+
+    for model_idx, model_key in enumerate(display_model_keys):
+        brenda_y, enzy_y, model_center_y = _model_row_y_positions(model_idx)
+        _add_model_label(model_center_y, model_key)
+
+        for dataset_name, y_pos, bar_thickness in (
+            ('BRENDA', enzy_y, brenda_bar_height),
+            ('EnzyExtract', brenda_y, enzy_bar_height),
+        ):
+            width_map = _normalize_bin_widths(plot_values[dataset_name][model_key])
+            cumulative_left = 0.0
+            nonzero_total = sum(width_map.values())
+            plotted_totals.append(nonzero_total)
+
+            for bin_idx, bin_label in enumerate(bin_order):
+                width_value = width_map[bin_label]
+                raw_value = plot_values[dataset_name][model_key].get(bin_label, 0.0)
+                if width_value <= 0 or not np.isfinite(raw_value):
+                    continue
+
+                segment_color = bin_colors[bin_idx]
+                ax.barh(
+                    y=y_pos,
+                    width=width_value,
+                    left=cumulative_left,
+                    height=bar_thickness,
+                    color=segment_color,
+                    edgecolor='0.82',
+                    linewidth=0.45,
+                    align='center',
+                    zorder=3
+                )
+
+                half_height = bar_thickness / 2.0
+                bar_extent_mins.append(y_pos - half_height)
+                bar_extent_maxs.append(y_pos + half_height)
+
+                segment_label = _format_sequence_similarity_value(raw_value, value_mode)
+                ax.text(
+                    cumulative_left + width_value / 2.0,
+                    y_pos,
+                    segment_label,
+                    ha='center',
+                    va='center',
+                    fontsize=12,
+                    color=_text_color_for_fill(segment_color),
+                    clip_on=True,
+                    zorder=4
+                )
+
+                cumulative_left += width_value
+
+        if model_idx < len(display_model_keys) - 1:
+            divider_y = _row_separator_y(model_idx)
+            ax.hlines(
+                divider_y,
+                xmin=0.0,
+                xmax=bar_total_width,
+                color='0.85',
+                linewidth=1.3,
+                zorder=1
+            )
+            mean_ax.hlines(
+                divider_y,
+                xmin=0.0,
+                xmax=100.0,
+                color='0.75',
+                linewidth=1.1,
+                zorder=1
+            )
+
+    mean_x_min = np.inf
+    mean_x_max = -np.inf
+    mean_markers: dict[str, dict[str, tuple[float, float]]] = {}
+    for dataset_name in mean_order:
+        for model_idx, model_key in enumerate(display_model_keys):
+            brenda_y, enzy_y, _ = _model_row_y_positions(model_idx)
+            y_pos = enzy_y if dataset_name == 'BRENDA' else brenda_y
+            mean_value = mean_values.get(dataset_name, {}).get(model_key, np.nan)
+            if not np.isfinite(mean_value):
+                continue
+            mean_value_pct = mean_value * 100.0
+            mean_markers.setdefault(model_key, {})
+            mean_markers[model_key][dataset_name] = (mean_value_pct, y_pos)
+            mean_x_min = min(mean_x_min, mean_value_pct)
+            mean_x_max = max(mean_x_max, mean_value_pct)
+
+    if np.isfinite(mean_x_min) and np.isfinite(mean_x_max):
+        mean_padding = max(2.0, (mean_x_max - mean_x_min) * 0.08)
+        mean_ax.set_xlim(mean_x_min - mean_padding, mean_x_max + mean_padding)
+    else:
+        mean_ax.set_xlim(0, 100)
+
+    mean_xlim = mean_ax.get_xlim()
+    mean_x_span = mean_xlim[1] - mean_xlim[0]
+    mean_tick_values = np.linspace(mean_xlim[0], mean_xlim[1], 4)
+    mean_ax.set_xticks(mean_tick_values)
+    mean_ax.xaxis.set_major_formatter(FuncFormatter(lambda value, pos: f'{value:.0f}%'))
+    mean_ax.tick_params(axis='x', labelsize=11, length=4, width=1.0, colors='0.25', pad=4)
+
+    for model_key in display_model_keys:
+        entries = mean_markers.get(model_key, {})
+        if 'BRENDA' in entries and 'EnzyExtract' in entries:
+            (x1, y1) = entries['BRENDA']
+            (x2, y2) = entries['EnzyExtract']
+            mean_ax.plot([x1, x2], [y1, y2], color='0.35', linewidth=1.8, zorder=2)
+            mean_ax.scatter(
+                [x1, x2],
+                [y1, y2],
+                s=95,
+                c=[mean_dataset_colors['BRENDA'], mean_dataset_colors['EnzyExtract']],
+                edgecolors='black',
+                linewidths=1.6,
+                zorder=4
+            )
+
+            for dataset_name, (mean_value, y_pos) in entries.items():
+                offset = 8 if mean_value <= (mean_xlim[0] + mean_x_span * 0.62) else -8
+                text_alignment = 'left' if offset > 0 else 'right'
+                mean_ax.annotate(
+                    _format_sequence_similarity_value(mean_value, 'percent'),
+                    xy=(mean_value, y_pos),
+                    xytext=(offset, 0),
+                    textcoords='offset points',
+                    ha=text_alignment,
+                    va='center',
+                    fontsize=10.5,
+                    fontweight='bold',
+                    color='0.2',
+                    clip_on=False,
+                    zorder=5
+                )
+
+    mean_ax.set_xlabel('Mean sequence similarity (%)', fontsize=13, labelpad=10)
+    mean_ax.set_yticks([])
+    mean_ax.spines['left'].set_visible(False)
+    mean_ax.spines['right'].set_visible(False)
+    mean_ax.spines['top'].set_visible(False)
+    mean_ax.spines['bottom'].set_visible(True)
+    mean_ax.spines['bottom'].set_linewidth(1.1)
+    mean_ax.spines['bottom'].set_color('0.25')
+
+    ax.set_xlim(label_x - label_space * 0.35, bar_canvas_width)
+
+    content_min_y = min(bar_extent_mins) if bar_extent_mins else 0.0
+    content_max_y = max(bar_extent_maxs) if bar_extent_maxs else bar_total_width
+    y_padding = max(brenda_bar_height, enzy_bar_height) * 0.75
+
+    legend_handles = [
+        Patch(facecolor=bin_colors[idx], edgecolor='none', label=bin_label)
+        for idx, bin_label in enumerate(bin_order)
+    ]
+    legend_ax.legend(
+        handles=legend_handles,
+        loc='center',
+        ncol=len(bin_order),
+        frameon=False,
+        title='Best sequence identity to training set',
+        fontsize=12,
+        title_fontsize=13
+    )
+
+    ax.set_ylim(content_min_y - y_padding, content_max_y + y_padding)
+    mean_ax.set_ylim(content_min_y - y_padding, content_max_y + y_padding)
+    ax.invert_yaxis()
+    mean_ax.invert_yaxis()
+    ax.set_axis_off()
+    mean_ax.tick_params(axis='y', left=False, labelleft=False)
+
+    fig.subplots_adjust(left=0.04, right=0.985, top=0.985, bottom=0.065)
+
+    fig.canvas.draw()
+
+    if save:
+        save_target = _resolve_save_target(
+            save,
+            save_path,
+            RESULT_DIR / 'plots' / 'sequence_similarity_plots',
+            'sequence_similarity_results.png'
+        )
+        if save_target is not None:
+            plt.savefig(str(save_target), dpi=300, bbox_inches='tight', transparent=False)
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
 
 
 def get_performance_subsets(
@@ -1699,8 +2776,64 @@ def plot_ec_class_enrichment(
     y_axis_right: bool = False,
     show: bool = True,
     save: bool = False,
-    save_path: Optional[Union[str, Path]] = None
+    save_path: Optional[Union[str, Path]] = None,
+    model_colors: Optional[dict[str, str]] = None,
+    show_title: bool = True
 ) -> None:
+    """
+    Plot the Enzyme Commission (EC) class enrichment for model prediction subsets.
+
+    This function calculates the log2 fold change of EC class distributions within
+    a specific performance subset of model predictions compared to the background 
+    distribution of the entire dataset. It plots these enrichment scores as a 
+    line chart across the 7 primary EC classes.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The input dataset containing prediction IDs and EC numbers.
+    model_names : dict[str, str]
+        Mapping from model identifier keys to their human-readable display names.
+    ec_column_name : str, default 'ec_number'
+        The name of the column in the dataframe containing EC numbers.
+    threshold_value : float, default 10.0
+        The numeric value defining the subset boundary (e.g., percentage or error margin).
+    subset_type : str, default 'best'
+        Defines the subset extraction logic (e.g., 'best' or 'worst' performing).
+    threshold_mode : str, default 'percentile'
+        The methodology for applying the threshold. Options include 'percentile', 
+        'relative_margin', or 'log_margin'.
+    pseudocount : float, default 0.1
+        A small constant added to both subset and background distributions prior 
+        to log2 fold change calculation to prevent division by zero or log(0).
+    y_limit : float, optional
+        Explicit symmetric limit for the Y-axis. If None, the limit dynamically 
+        scales to 110% of the maximum absolute log2 fold change.
+    y_axis_right : bool, default False
+        If True, shifts the Y-axis tick labels and spine to the right side.
+    show : bool, default True
+        If True, displays the plot interactively using plt.show().
+    save : bool, default False
+        If True, saves the generated figure and its associated legend to disk.
+    save_path : str or Path, optional
+        Custom directory path or complete file path string to override default save tracking.
+    model_colors : dict[str, str], optional
+        Mapping from model identifier keys to valid color strings. If provided, 
+        dictates the line and marker colors for each model. Falls back to the 
+        'husl' palette for missing keys or if None.
+    show_title : bool, default True
+        If True, renders a dynamically generated title based on the subset criteria.
+
+    Returns
+    -------
+    None
+        Renders or saves the plot configuration directly.
+
+    Raises
+    ------
+    ValueError
+        If no valid EC classes (1-7) are found within the specified dataframe column.
+    """
     subsets = get_performance_subsets(
         df, 
         list(model_names.keys()), 
@@ -1734,7 +2867,7 @@ def plot_ec_class_enrichment(
     fig, ax = plt.subplots(figsize=(7, 5))
     sns.set_style("ticks")
     
-    colors = sns.color_palette("husl", n_colors=len(model_names))
+    fallback_colors = sns.color_palette("husl", n_colors=len(model_names))
     max_abs_log2fc = 0.0
     
     for idx, (model_key, subset_ids) in enumerate(subsets.items()):
@@ -1756,13 +2889,19 @@ def plot_ec_class_enrichment(
             max_abs_log2fc = current_max_abs
             
         clean_name = model_names.get(model_key, model_key)
+        
+        if model_colors and model_key in model_colors:
+            line_color = model_colors[model_key]
+        else:
+            line_color = fallback_colors[idx]
+            
         ax.plot(
             x_positions, 
             log2fc, 
             marker='o', 
             linewidth=2, 
             markersize=7, 
-            color=colors[idx], 
+            color=line_color, 
             label=clean_name
         )
 
@@ -1777,25 +2916,24 @@ def plot_ec_class_enrichment(
     ax.set_xlabel("EC Class", fontsize=12)
     ax.set_ylabel(r"Enrichment ($\log_2$ Fold Change)", fontsize=12)
     
-    if threshold_mode == 'percentile':
-        title_text = f"EC Class Enrichment: {int(threshold_value)}% {subset_type} predictions"
-    elif threshold_mode == 'relative_margin':
-        relation = "within" if subset_type == 'best' else "exceeding"
-        title_text = f"EC Class Enrichment: Predictions {relation} {threshold_value}% rel error"
-    elif threshold_mode == 'log_margin':
-        relation = "within" if subset_type == 'best' else "exceeding"
-        title_text = f"EC Class Enrichment: Predictions {relation} {threshold_value} log10 error"
-    else:
-        title_text = f"EC Class Enrichment ({subset_type})"
-        
-    plt.suptitle(title_text, fontsize=16, fontweight='bold', y=1.02)
+    if show_title:
+        if threshold_mode == 'percentile':
+            title_text = f"{int(threshold_value)}% {subset_type} predictions"
+        elif threshold_mode == 'relative_margin':
+            relation = "within" if subset_type == 'best' else "exceeding"
+            title_text = f"Predictions {relation} {threshold_value}% rel error"
+        elif threshold_mode == 'log_margin':
+            relation = "within" if subset_type == 'best' else "exceeding"
+            title_text = f"Predictions {relation} {threshold_value} log10 error"
+        else:
+            title_text = f"EC Class Enrichment ({subset_type})"
+            
+        plt.suptitle(title_text, fontsize=16, fontweight='bold', y=1.02)
     
     if y_axis_right:
         sns.despine(left=True, right=False, top=True, bottom=False)
-        
         ax.yaxis.tick_right()                  
         ax.yaxis.set_label_position("right")
-        
         ax.tick_params(
             axis='y',        
             right=True,     
@@ -1830,7 +2968,6 @@ def plot_ec_class_enrichment(
             
             handles, labels = ax.get_legend_handles_labels()
             if handles:
-                
                 fig_width = max(3, len(handles) * 1.5)
                 fig_leg = plt.figure(figsize=(fig_width, 1))
                 
@@ -1855,6 +2992,7 @@ def plot_ec_class_enrichment(
     else:
         plt.close(fig)
 
+        
     
 def plot_model_intersection_sets(
     df: pd.DataFrame,

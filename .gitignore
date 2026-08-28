@@ -38,6 +38,8 @@ data/enzyextract/*
 !data/enzyextract/.gitkeep
 !data/enzyextract/enzy_extract_processed.csv
 
+data/leakage/*
+
 results/plots/*
 !results/plots/.gitkeep
 
