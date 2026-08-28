@@ -1,0 +1,53 @@
+{
+  "benchmark": {
+    "path": "brenda/brenda_filtered.csv",
+    "format": "csv",
+    "columns": {
+      "sequence": "sequence",
+      "substrates": "substrates",
+      "ec_number": "ec_number",
+      "products": "products"
+    },
+    "aggregate": {
+      "key_columns": ["substrates", "sequence"],
+      "aggregation_strategies": {
+        "experimental_kcat": "max"
+      }
+    }
+  },
+  "audits": [
+    {
+      "name": "model1_name",
+      "training": {
+        "path": "leakage/model1_training_data.csv/json/pkl",
+        "format": "csv/json/pkl",
+        "columns": {
+          "sequence": "x",
+          "substrates": "y",
+          "ec_number": "z",
+          "products": null
+        }
+      },
+      "output_filename": "model1_overlap.csv",
+      "sequence_similarity_thresholds": [0.5, 0.7, 0.9]
+    },
+    {
+      "name": "model2_name",
+      "training": {
+        "path": "leakage/model2_training_data.csv/json/pkl",
+        "format": "csv/json/pkl",
+        "columns": {
+          "sequence": "x",
+          "substrates": "y",
+          "ec_number": "z",
+          "products": "a"
+        }
+      },
+      "output_filename": "model2_overlap.csv",
+      "sequence_similarity_thresholds": [0.5, 0.7, 0.9]
+    }
+  ],
+  "output_dirname": "leakage",
+  "combined_output_filename": "leakage_audit_summary.csv",
+  "status_filename": "leakage_audit_status.json"
+}

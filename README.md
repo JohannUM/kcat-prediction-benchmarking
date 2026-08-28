@@ -82,7 +82,7 @@ You can find usage examples under the `scripts` directory. All scripts must be r
 Run multiple models sequentially on one input file:
 
 ```bash
-python scripts/run_models.py --models unikp dlkcat catapro --input path/to/input.csv
+conda run -n kcatbench python scripts/run_models.py --models unikp dlkcat catapro --input path/to/input.csv
 ```
 
 Valid model identifiers: `dlkcat`, `unikp`, `turnup`, `catpred`, `catapro`, `mmkcat`
@@ -90,7 +90,15 @@ Valid model identifiers: `dlkcat`, `unikp`, `turnup`, `catpred`, `catapro`, `mmk
 Run in the background with nohup:
 
 ```bash
-nohup python scripts/run_models.py --models unikp dlkcat --input path/to/input.csv --output my_run.csv > nohup.out 2>&1 &
+nohup conda run -n kcatbench python scripts/run_models.py --models unikp dlkcat --input path/to/input.csv --output my_run.csv > nohup.out 2>&1 &
 ```
 
 If `--output` is omitted, a timestamped file is created automatically in the configured results directory.
+
+### run_leakage_audit.py
+
+Run a data leakage audit between a benchamrking dataset and multiple training datasets.
+
+```bash
+conda run -n kcatbench python scripts/run_leakage_audit.py --setup-file scripts/leakage_audit_setup_example.json
+```
